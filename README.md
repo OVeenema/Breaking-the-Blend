@@ -74,8 +74,8 @@ Use a dedicated environment so the analysis always runs with the same packages.
 **With conda / mamba (recommended):**
 
 ```bash
-git clone https://github.com/<you>/breaking-the-blend.git
-cd breaking-the-blend
+git clone https://github.com/OVeenema/breaking-the-blend.git
+cd Breaking-the-blend
 conda env create -f environment.yml          # creates "breaking-the-blend" and installs this package (editable)
 conda activate breaking-the-blend
 python -m ipykernel install --user --name breaking-the-blend --display-name "Breaking the Blend"
@@ -85,7 +85,7 @@ python tests/test_pipeline.py                # ~1 min, runs on synthetic data
 **With venv + pip:**
 
 ```bash
-cd breaking-the-blend
+cd Breaking-the-blend
 python -m venv .venv
 source .venv/bin/activate                    # Windows: .venv\Scripts\activate
 pip install -e ".[extras,test]"
@@ -103,7 +103,7 @@ dependencies, e.g. astropy and emcee, still need to be present.)
 ## Getting started
 
 * **`notebooks/00_quickstart_mock.ipynb`** — the whole method in a few minutes on a synthetic galaxy with a known
-  answer. No data needed. Start here (and use it for hands-on sessions; it ends with exercises).
+  answer. No data needed. Start here (it ends with some things to try).
 * **`notebooks/01_NGC5728.ipynb`** — a fully worked, annotated example on NGC 5728. It adopts several settings of the
   original by-hand analysis (marked in the notebook) so the published maps are reproduced closely.
 * **`notebooks/02_template_new_galaxy.ipynb`** — **start here for a new target**: the same workflow with no
