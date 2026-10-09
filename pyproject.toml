@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "breaking-the-blend"
+version = "0.1.0"
+description = "Multi-tracer kinematic decomposition of IFS data into disc (star formation) and AGN outflow components (Veenema et al. 2026)"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Oscar Veenema", email = "oscar.veenema@physics.ox.ac.uk" }]
+dependencies = ["numpy>=1.22", "scipy>=1.8", "matplotlib>=3.5", "astropy>=5.0", "emcee>=3.1"]
+
+[project.optional-dependencies]
+extras = ["tqdm", "cmasher", "capfit", "astroquery", "jupyterlab", "ipykernel"]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["breaking_the_blend"]

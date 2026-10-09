@@ -1,0 +1,24 @@
+# Conda environment for Breaking the Blend.
+#   conda env create -f environment.yml          (run from the repository root)
+#   conda activate breaking-the-blend
+#   python -m ipykernel install --user --name breaking-the-blend --display-name "Breaking the Blend"
+name: breaking-the-blend
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - matplotlib
+  - astropy
+  - emcee
+  - tqdm
+  - cmasher
+  - jupyterlab
+  - ipykernel
+  - pytest
+  - astroquery        # for scripts/download_mast_cubes.py
+  - pip
+  - pip:
+      - capfit        # optional: CapFit fitter used in the original NGC 5728 analysis
+      - -e .          # this package, editable: changes to the .py files are used immediately
