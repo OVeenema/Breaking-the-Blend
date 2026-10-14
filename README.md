@@ -43,10 +43,11 @@ python tests/test_pipeline.py          # should end with "all tests passed"
 
 | Notebook | Data needed | Purpose |
 |---|---|---|
-| `00_quickstart_mock.ipynb` | none (synthetic) | the whole method in a few seconds, checked against a known answer |
+| `00_quickstart_mock.ipynb` | none (synthetic) | the whole method in a few minutes, checked against a known answer |
 | `01_NGC5728.ipynb` | NGC 5728 cubes (below) | fully worked real-data example |
 | `02_template_new_galaxy.ipynb` | your cubes | clean template for any galaxy (cells to edit marked **EDIT**) |
 | `03_check_line_settings.ipynb` | your cubes | quick check of line windows and fits before a full run |
+| `04_geometry_explorer.ipynb` | none | schematic of any disc + bicone geometry relative to the line of sight |
 
 **4. Data for notebook 01.** Download the public JWST cubes of NGC 5728 (programmes 1670 and 5017) from MAST:
 
@@ -62,10 +63,10 @@ Results of every notebook are written to `notebooks/results/<name>/`.
 | Step | What | Function(s) |
 |---|---|---|
 | 1 | Continuum-subtract each line, flux map, single- and double-Gaussian fits; median σ of each component | `fit_lines`, `dispersion_medians` |
-| 2 | Fit a thin rotating disc, a hollow bicone, or both (α-weighted) to the velocity maps — or skip and give literature values | `fit_kinematics`, `fit_many`, `trend_with_ip` |
+| 2 | Fit a thin rotating disc, a hollow bicone, or both (α-weighted) to the velocity maps — or skip and give literature values; draw the geometry | `fit_kinematics`, `fit_many`, `trend_with_ip`, `plot_geometry` |
 | 3 | In every spaxel fix both Gaussians' **velocities** (models) and **widths** (Step 1), fit only the amplitudes → disc fraction per line | `line_params`, `decompose_lines` |
-| 4 | Weighted stack of all lines on a common pc grid → final AGN-outflow fraction map | `stack_fraction_maps` |
-| 5 | AGN- and star-formation-dominated spectra across all bands (optionally: split a continuum map, `decompose_continuum`) | `extract_all`, `stitch_spectra` |
+| 4 | Weighted stack of all lines on a common pc grid → final AGN-outflow fraction map, and the share of it dominated by each component | `stack_fraction_maps`, `fraction_summary` |
+| 5 | AGN- and star-formation-dominated spectra (with errors) across all bands (optionally: split a continuum map, `decompose_continuum`) | `extract_all`, `stitch_spectra` |
 
 ## Install
 
@@ -74,18 +75,18 @@ Use a dedicated environment so the analysis always runs with the same packages.
 **With conda / mamba (recommended):**
 
 ```bash
-git clone https://github.com/OVeenema/breaking-the-blend.git
-cd Breaking-the-blend
+git clone https://github.com/OVeenema/Breaking-the-Blend.git
+cd Breaking-the-Blend
 conda env create -f environment.yml          # creates "breaking-the-blend" and installs this package (editable)
 conda activate breaking-the-blend
 python -m ipykernel install --user --name breaking-the-blend --display-name "Breaking the Blend"
-python tests/test_pipeline.py                # ~1 min, runs on synthetic data
+python tests/test_pipeline.py                # ~1-2 min, runs on synthetic data
 ```
 
 **With venv + pip:**
 
 ```bash
-cd Breaking-the-blend
+cd Breaking-the-Blend
 python -m venv .venv
 source .venv/bin/activate                    # Windows: .venv\Scripts\activate
 pip install -e ".[extras,test]"
@@ -111,9 +112,11 @@ dependencies, e.g. astropy and emcee, still need to be present.)
 * **`notebooks/03_check_line_settings.ipynb`** — a fast checker for a new dataset: shows each line's wavelength
   window (line region, continuum fit, neighbouring lines) and fits a handful of spaxels per line, flagging failed or
   degenerate fits. Tune `LINE_SETTINGS` here, then copy them into notebook 02.
+* **`notebooks/04_geometry_explorer.ipynb`** — draw any disc + hollow-bicone geometry as seen by the observer and in
+  3-D (in the style of Fischer et al. 2013), with worked examples for NGC 5728 and Circinus. No data needed.
 
 Every notebook has a `SAVE_FIGURES` switch at the top: `"png"`, `"pdf"`, `"both"` or `"none"`
-(figures go to `results/<name>/figures/`).
+(figures go to `notebooks/results/<name>/figures/`).
 
 ## One analysis per target
 
@@ -122,9 +125,9 @@ Everything for a galaxy is handled by a `Project`: where the cubes are, the reds
 ```python
 import breaking_the_blend as btb
 
-proj  = btb.Project("NGC5728", data_dir="/data/NGC5728", z=0.00935)   # results -> results/NGC5728/
+proj  = btb.Project("NGC5728", data_dir="../data/NGC5728", z=0.00935)   # results -> results/NGC5728/
 proj.find_cubes()                       # finds every *s3d.fits* (any sub-folder), names them ch3-short, g395h-f290lp, ...
-cubes = proj.load_cubes()               # Jy/pixel, rest-frame wavelengths, AGN position per cube
+cubes = proj.load_cubes(load_err=True)  # Jy/pixel, rest-frame wavelengths, AGN position per cube (+ ERR extensions)
 
 line_maps = proj.checkpoint("step1_line_maps", btb.fit_lines, cubes, lines,
                             settings=dict(lines=lines))    # computed once, then re-loaded
@@ -161,8 +164,10 @@ fit = btb.fit_kinematics(line_maps["SIII"], "combined", params, method="emcee") 
 ```
 
 Radii are in **pc**, velocities in km/s, angles in degrees. **Position angles are east of north** (receding side of
-the disc / redshifted cone). Maps are stored as in the cube and drawn with `origin="lower"`; for pipeline
-`skyalign` cubes (north up, east left) the conversion to the angle from +x is `PA + 90` (`pa_offset`).
+the disc / redshifted cone). `inc_out` is the angle between the bicone axis and the **line of sight** (0 = pole-on);
+`inc_disc` is the usual disc inclination (0 = face-on). Maps are stored as in the cube and drawn with
+`origin="lower"`; for pipeline `skyalign` cubes (north up, east left) the conversion to the angle from +x is
+`PA + 90` (`pa_offset`). Free parameters that end on the edge of their prior range are flagged in the fit summary.
 
 ## Options worth knowing
 
@@ -174,6 +179,15 @@ the disc / redshifted cone). Maps are stored as in the cube and drawn with `orig
   (give the AGN pixel position and pixel size of that map); pass them to `decompose_lines(..., external={...})`.
 * **Decomposition**: per-line or common model parameters, measured or fixed dispersions, optional re-extraction
   of the spectra with other windows (`recut`), fixed or free dispersions (`sigma_mode`).
+* **Geometry schematic**: `btb.plot_geometry(params)` draws the disc and hollow bicone as seen by the observer (parts
+  of the cones behind the disc as a wire-frame, parts in front shaded, cone/disc intersections marked) and in 3-D.
+  Used in notebooks 01 and 02 for the best-fit geometry and the geometry adopted in the decomposition
+  (`btb.mean_geometry(...)`). By default the outer opening angle is drawn as `theta_out / 2`, because the model
+  applies its opening angles to sky-projected positions (`halve_theta_out=False` draws it unchanged, e.g. for
+  3-D half-opening angles from the literature). Which side of the disc is nearer to us is set with
+  `disc_near_side=+1/-1` (not constrained by the kinematics).
+* **Dominated fractions**: `btb.fraction_summary(stack, sf_max=0.2, agn_min=0.8)` prints the share of the stacked map
+  that is disc / star-formation dominated, mixed, and outflow / AGN dominated.
 * **Plots**: `breaking_the_blend.plotting` sets a publication style on import (`bplt.set_style(...)` to change it).
   Fraction maps use cmasher *iceburn*, oriented so star formation is always orange and the AGN outflow
   always blue (disc-fraction maps: high = orange; outflow-fraction maps: high = blue).
@@ -181,6 +195,11 @@ the disc / redshifted cone). Maps are stored as in the cube and drawn with `orig
   degenerate (a single-component profile gives two Gaussians of nearly the same width).
 * **Spectra**: detector gaps are left out, bands with too few selected spaxels are skipped (`min_spaxels`), and
   `stitch_spectra` scales all bands relative to a reference band (default: the one covering the largest sky area).
+* **Spectrum errors**: `extract_all(..., err_method=...)` gives a 1σ error per channel - `"cube"` (the cubes' ERR
+  extensions summed in quadrature; load the cubes with `load_err=True`; a lower limit, as neighbouring spaxels of a
+  resampled cube share noise), `"empirical"` (the measured channel-to-channel scatter of each spectrum), or `"max"`
+  (the larger of the two). `stitch_spectra(..., with_errors=True)` carries them through the stitching, and the
+  exported `component_spectra_*.txt` files have three columns: rest wavelength [µm], flux [Jy], error [Jy].
 * **Exported map**: `results/<name>/stacked_fraction_map.fits` holds the AGN outflow fraction (primary), the disc
   fraction (`F_DISC`) and `N_LINES`, the number of lines contributing to each pixel.
 
@@ -191,16 +210,19 @@ breaking_the_blend/
   project.py     Project: data folder, results folder, checkpoints, config, exports
   lines.py       LineSpec + catalogue of NIR/MIR ionic lines
   cubes.py       load s3d cubes, pc scale, AGN position, line -> cube assignment
-  linefit.py     Step 1   continuum, flux, single/double Gaussians, moments
+  linefit.py     Step 1   continuum, flux, single/double Gaussians, moments, quick line checks
   dispersion.py  Step 1b  disc / outflow dispersion medians
   models.py      disc, bicone and combined velocity fields
   kinfit.py      Step 2   emcee / least-squares fits, trends with IP
+  geometry.py    schematic of the disc + bicone geometry relative to the line of sight
   decompose.py   Step 3   constrained amplitude fits -> f_disc
-  stacking.py    Step 4   weighted multi-line map, robustness checks
-  extraction.py  Step 5   component spectra, stitching, continuum split
+  stacking.py    Step 4   weighted multi-line map, robustness checks, dominated fractions
+  extraction.py  Step 5   component spectra and errors, stitching, continuum split
   external.py    optional imported velocity / dispersion maps (3DBarolo, MOKA3D, ...)
   plotting.py    one function per figure of the paper
   mock.py        synthetic ring + bicone cubes in the real MIRI/MRS bands, with known truth
+scripts/
+  download_mast_cubes.py   download the s3d cubes of a target from MAST
 ```
 
 ## Notes on differences from the original analysis notebooks
