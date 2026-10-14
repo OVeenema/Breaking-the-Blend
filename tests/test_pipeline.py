@@ -124,6 +124,29 @@ def test_check_and_stitch():
     assert np.all(np.isfinite(f)) and np.all(np.diff(w) >= 0)
 
 
+def test_geometry_and_fractions():
+    import matplotlib.pyplot as plt
+    from breaking_the_blend.geometry import outflow_axis, disc_frame
+    # redshifted cone points away from the observer, along its PA on the sky
+    a = outflow_axis(inc_out=60, pa_out=90)
+    assert a[2] < 0 and a[0] > 0 and abs(a[1]) < 1e-9
+    m, u, n = disc_frame(inc_disc=30, pa_disc=0)
+    assert np.isclose(n[2], np.cos(np.deg2rad(30))) and np.isclose(abs(m @ n), 0)
+    p = dict(inc_disc=43, pa_disc=194, inc_out=48, pa_out=110, theta_in=21, theta_out=80, R_out=600)
+    fig = btb.plot_geometry(p, print_params=False)
+    assert len(fig.axes) == 2
+    plt.close(fig)
+    g = btb.mean_geometry({"a": {**p, "pa_out": 350}, "b": {**p, "pa_out": 10}})
+    assert min(abs(g["pa_out"]), abs(g["pa_out"] - 360)) < 1e-6        # circular mean of 350 and 10 is 0
+    # fraction summary on a toy stacked map
+    from breaking_the_blend.stacking import StackedMap
+    f = np.array([[0.1, 0.5], [0.9, np.nan]])
+    st = StackedMap(x_pc=np.array([0.0, 10.0]), y_pc=np.array([0.0, 10.0]), f_disc=1 - f, n_lines=np.ones((2, 2)),
+                    weights={}, mean_f_disc={}, scheme="mean/linear")
+    r = btb.fraction_summary(st, verbose=False)
+    assert np.isclose(r["disc_dominated"], 1 / 3) and np.isclose(r["outflow_dominated"], 1 / 3)
+
+
 def test_models_pa_convention():
     # disc receding side lies along pa_disc (east of north; +x = west, +y = north)
     p = dict(v_disc=200, R_disc=100, inc_disc=60, pa_disc=0)  # receding to the north
@@ -137,5 +160,6 @@ if __name__ == "__main__":
     test_models_pa_convention()
     test_unbounded_fitters()
     test_check_and_stitch()
+    test_geometry_and_fractions()
     test_full_pipeline(pathlib.Path(tempfile.mkdtemp()))
     print("all tests passed")

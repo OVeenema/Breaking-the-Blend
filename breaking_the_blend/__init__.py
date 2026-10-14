@@ -31,12 +31,13 @@ from .kinfit import (KinematicFit, fit_kinematics, fit_many, fits_table, trend_w
                      mean_params, DEFAULT_PARAMS)
 from .decompose import Decomposition, decompose_line, decompose_lines, line_params
 from .stacking import (StackedMap, stack_fraction_maps, line_weight, line_to_line_scatter,
-                       compare_stacks)
+                       compare_stacks, fraction_summary)
 from .extraction import (ComponentSpectra, extract_spectra, extract_all, stitch_spectra,
-                         decompose_continuum, fraction_on_cube)
+                         decompose_continuum, fraction_on_cube, empirical_errors)
 from .external import ExternalMap, load_external_map
 from .project import Project, list_projects
 from .utils import save, load
+from .geometry import plot_geometry, plot_sky_view, plot_3d_view, mean_geometry, geometry_params
 from .mock import MRS_BANDS, NIRSPEC_BANDS
 from . import plotting, mock
 

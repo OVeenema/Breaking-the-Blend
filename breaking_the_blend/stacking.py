@@ -162,3 +162,27 @@ def compare_stacks(stacks: Dict[str, StackedMap], reference: str) -> None:
             continue
         diff = np.abs(s.sample(X, Y) - r.f_disc)
         print(f"{k:>25s}: median |delta f_disc| = {np.nanmedian(diff):.3f}")
+
+
+def fraction_summary(stack: StackedMap, sf_max: float = 0.2, agn_min: float = 0.8,
+                     verbose: bool = True) -> Dict[str, float]:
+    """Share of the stacked map (by area) that is disc / star-formation dominated
+    (f_out <= ``sf_max``), mixed, and outflow / AGN dominated (f_out >= ``agn_min``).
+    Use the same thresholds as for the spectra extraction (paper: 0.2 and 0.8)."""
+    fo = stack.f_out[np.isfinite(stack.f_out)]
+    n = fo.size
+    dx = abs(stack.x_pc[1] - stack.x_pc[0])
+    dy = abs(stack.y_pc[1] - stack.y_pc[0])
+    res = {"n_pix": int(n), "area_kpc2": n * dx * dy / 1e6,
+           "disc_dominated": float(np.mean(fo <= sf_max)) if n else np.nan,
+           "mixed": float(np.mean((fo > sf_max) & (fo < agn_min))) if n else np.nan,
+           "outflow_dominated": float(np.mean(fo >= agn_min)) if n else np.nan,
+           "mean_f_out": float(np.mean(fo)) if n else np.nan,
+           "median_f_out": float(np.median(fo)) if n else np.nan}
+    if verbose:
+        print(f"Stacked map: {n} grid points with a fraction ({res['area_kpc2']:.2f} kpc^2)")
+        print(f"  disc / star-formation dominated (f_out <= {sf_max:g}): {100 * res['disc_dominated']:5.1f} %")
+        print(f"  mixed ({sf_max:g} < f_out < {agn_min:g}):                    {100 * res['mixed']:5.1f} %")
+        print(f"  outflow / AGN dominated (f_out >= {agn_min:g}):        {100 * res['outflow_dominated']:5.1f} %")
+        print(f"  mean f_out = {res['mean_f_out']:.2f}, median f_out = {res['median_f_out']:.2f}")
+    return res

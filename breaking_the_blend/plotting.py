@@ -596,14 +596,27 @@ def plot_extraction_regions(spec, cube):
 
 
 def plot_component_spectra(wave_agn, flux_agn, wave_sf, flux_sf, smooth: float = 0, sf_scale: float = 1.0,
-                           ax=None, xlim=None):
-    """AGN and star-forming spectra on a log scale (optionally Gaussian-smoothed)."""
+                           ax=None, xlim=None, err_agn=None, err_sf=None, err_scale: float = 1.0,
+                           err_alpha: float = 0.3):
+    """AGN and star-forming spectra on a log scale (optionally Gaussian-smoothed).
+
+    err_agn, err_sf : 1-sigma errors, drawn as shaded bands (flux +/- err_scale x error). Errors of
+        bright spectra are often too small to see at full scale - ``err_scale`` exaggerates them
+        for display only (it is noted in the legend).
+    """
     from scipy.ndimage import gaussian_filter1d
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 5.5), constrained_layout=True)
     style_axes(ax)
     fa = gaussian_filter1d(flux_agn, smooth) if smooth else flux_agn
     fs = gaussian_filter1d(flux_sf, smooth) if smooth else flux_sf
+    for w, f, e, col, sc in ((wave_agn, fa, err_agn, "cornflowerblue", 1.0), (wave_sf, fs, err_sf, "crimson", sf_scale)):
+        if e is not None:
+            e = np.asarray(e, float) * err_scale * sc
+            lo = np.clip(f * sc - e, np.nanmin(f[f > 0]) * sc * 1e-2 if np.any(f > 0) else 1e-30, None)
+            ax.fill_between(w, lo, f * sc + e, color=col, alpha=err_alpha, lw=0,
+                            label=f"1$\\sigma$ error" + (f" ($\\times${err_scale:g})" if err_scale != 1 else "")
+                            if col == "cornflowerblue" else None)
     ax.plot(wave_agn, fa, color="cornflowerblue", lw=1.6, label="AGN-dominated")
     ax.plot(wave_sf, fs * sf_scale, color="crimson", lw=1.6,
             label="Star-formation-dominated" + (f" $\\times${sf_scale:g}" if sf_scale != 1 else ""))

@@ -125,6 +125,7 @@ def make_mock_cubes(bands: Optional[Dict[str, tuple]] = None, lines: Optional[Di
                 truth["f_disc"][ln.name] = amp_d * sigma_disc / (amp_d * sigma_disc + amp_o * sigma_out)
         data += rng.normal(0, noise * 1e-3, data.shape)
         cubes[name] = Cube(name=name, data=data.astype(np.float32), wave=wave, pixel_scale=pix,
-                           pc_per_arcsec=scale, z=z)
+                           pc_per_arcsec=scale, z=z,
+                           err=np.full(data.shape, noise * 1e-3, dtype=np.float32))
         truth["agn_xy"][name] = agn_xy
     return cubes, truth

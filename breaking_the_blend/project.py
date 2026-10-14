@@ -153,6 +153,8 @@ class Project:
                    pixel_scale_overrides: Optional[Dict[str, float]] = None) -> Dict[str, Cube]:
         """Load the cubes (all found ones, or ``names``) and set their AGN positions.
 
+        load_err : also read the ERR extensions (needed for spectrum errors with err_method="cube";
+            doubles the memory used by the cubes).
         agn_overrides : ``{cube: (x, y)}`` pixel positions where the continuum peak is wrong.
         pixel_scale_overrides : ``{cube: arcsec}`` to replace the header pixel size
             (normally not needed - the header value is correct for pipeline cubes).
@@ -163,7 +165,7 @@ class Project:
             self.find_cubes()
         names = list(names) if names is not None else list(self.cube_files)
         for n in names:
-            if n not in self.cubes:
+            if n not in self.cubes or (load_err and self.cubes[n].err is None):
                 self.cubes[n] = load_cube(self.cube_files[n], self.z, name=n,
                                           distance_mpc=self.distance_mpc, load_err=load_err)
                 print(self.cubes[n])
@@ -295,10 +297,14 @@ class Project:
         print(f"exported -> {self.file(key, '.npz')}")
 
     def export_spectra(self, spectra: Dict[str, tuple], key: str = "component_spectra") -> None:
-        """Write spectra ``{label: (wave, flux)}`` to one text file per label."""
-        for lab, (w, f) in spectra.items():
+        """Write spectra ``{label: (wave, flux)}`` or ``{label: (wave, flux, error)}`` to one text
+        file per label (columns: rest wavelength [um], flux [Jy] and, if given, 1-sigma error [Jy])."""
+        for lab, cols in spectra.items():
             out = self.file(f"{key}_{_safe(lab)}", ".txt")
-            np.savetxt(out, np.column_stack([w, f]), header="rest_wavelength_um  flux_Jy")
+            if len(cols) == 3:
+                np.savetxt(out, np.column_stack(cols), header="rest_wavelength_um  flux_Jy  flux_err_Jy")
+            else:
+                np.savetxt(out, np.column_stack(cols[:2]), header="rest_wavelength_um  flux_Jy")
             print(f"exported -> {out}")
 
     def __repr__(self):
