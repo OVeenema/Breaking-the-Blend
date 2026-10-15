@@ -175,9 +175,11 @@ def extract_all(cubes: Dict[str, Cube], stack: StackedMap, **kwargs) -> Dict[str
     return out
 
 
-def _weight(s: ComponentSpectra, component: str) -> float:
+def _weight(s, component: str) -> float:
     """How much a band's spectrum can be trusted for normalisation: the sky area it is built
     from (number of selected spaxels, or summed fractions, times the pixel area)."""
+    if isinstance(s, ApertureSpectrum):
+        return s.area_arcsec2
     m = s.agn_mask if component == "agn" else s.sf_mask
     if m is not None:
         n = float(m.sum())
@@ -218,7 +220,7 @@ def _merge(W, F, E, w, f, e, min_overlap_points):
             np.concatenate([lo_part[2], blend_e, hi_part[2]]), k)
 
 
-def stitch_spectra(spectra: Dict[str, ComponentSpectra], component: str = "agn",
+def stitch_spectra(spectra: Dict[str, object], component: str = "agn",
                    reference: Optional[str] = None, min_overlap_points: int = 5, verbose: bool = True,
                    with_errors: bool = False):
     """Join the per-band spectra into one.
@@ -228,6 +230,11 @@ def stitch_spectra(spectra: Dict[str, ComponentSpectra], component: str = "agn",
     By default the reference is the band whose spectrum covers the largest sky area (selected
     spaxels x pixel area), so the overall normalisation is not set by a small field of view.
     Bands without usable data (all NaN) are skipped.
+
+    component : ``"agn"`` / ``"sf"`` for :class:`ComponentSpectra`, ``"flux"`` for aperture spectra
+        (:func:`extract_apertures`).
+    reference : band kept unscaled. To put an aperture spectrum on the same footing as the AGN-dominated
+        spectrum, pass the same reference band (:func:`reference_band`).
 
     Returns (wave, flux, scale_factors), or (wave, flux, error, scale_factors) with
     ``with_errors=True`` - the errors are scaled with each band and combined in the blended
@@ -293,3 +300,186 @@ def decompose_continuum(cube: Cube, stack: StackedMap, wave_range: Tuple[float, 
           f"(over {ok.sum()} spaxels with a defined fraction)")
     return {"total": np.where(ok, total, np.nan), "disc": disc, "outflow": out,
             "frac_outflow": float(frac), "f_disc_map": fd}
+
+
+# ======================================================================
+# Aperture spectra (e.g. a nuclear spectrum in a 0.3" radius circle)
+# ======================================================================
+@dataclass
+class ApertureSpectrum:
+    """Spectrum summed in a circular aperture in one cube."""
+
+    name: str
+    cube_name: str
+    wave: np.ndarray
+    flux: np.ndarray                    # [Jy]
+    flux_err: Optional[np.ndarray]      # 1-sigma [Jy]
+    weights: np.ndarray = field(repr=False)   # fraction of each spaxel inside the aperture
+    center_xy: Tuple[float, float] = (0.0, 0.0)
+    radius_arcsec: float = 0.3
+    pixel_scale: float = 1.0
+    covered_frac: float = 1.0           # fraction of the aperture area inside the observed field
+    err_method: Optional[str] = None
+
+    @property
+    def area_arcsec2(self) -> float:
+        return float(self.weights.sum() * self.pixel_scale ** 2)
+
+    def __repr__(self):
+        return (f"ApertureSpectrum('{self.name}', {self.cube_name}, r={self.radius_arcsec:g}\", centre "
+                f"({self.center_xy[0]:.2f}, {self.center_xy[1]:.2f}), {self.weights.sum():.1f} pix, "
+                f"covered {100 * self.covered_frac:.0f}%)")
+
+
+def aperture_weights(shape, x0: float, y0: float, r_pix: float, method: str = "exact",
+                     oversample: int = 10) -> np.ndarray:
+    """Fraction of each pixel inside a circle of radius ``r_pix`` centred on (x0, y0) (0-based pixels).
+
+    method : ``"exact"`` - fractional overlap (computed on an ``oversample`` x ``oversample`` sub-grid;
+        like photutils' ``method="exact"`` to ~1%); ``"center"`` - 1 if the pixel centre is inside, else 0.
+    """
+    ny, nx = shape
+    w = np.zeros(shape)
+    x_lo, x_hi = max(int(np.floor(x0 - r_pix - 1)), 0), min(int(np.ceil(x0 + r_pix + 1)), nx - 1)
+    y_lo, y_hi = max(int(np.floor(y0 - r_pix - 1)), 0), min(int(np.ceil(y0 + r_pix + 1)), ny - 1)
+    if x_lo > x_hi or y_lo > y_hi:
+        return w
+    yy, xx = np.mgrid[y_lo:y_hi + 1, x_lo:x_hi + 1]
+    if method == "center":
+        w[y_lo:y_hi + 1, x_lo:x_hi + 1] = ((xx - x0) ** 2 + (yy - y0) ** 2 <= r_pix ** 2).astype(float)
+        return w
+    if method != "exact":
+        raise ValueError("method must be 'exact' or 'center'")
+    sub = (np.arange(oversample) + 0.5) / oversample - 0.5          # sub-pixel offsets
+    dx = xx[..., None, None] + sub[None, None, None, :] - x0
+    dy = yy[..., None, None] + sub[None, None, :, None] - y0
+    w[y_lo:y_hi + 1, x_lo:x_hi + 1] = ((dx ** 2 + dy ** 2) <= r_pix ** 2).mean(axis=(-1, -2))
+    return w
+
+
+def extract_aperture(cube: Cube, radius_arcsec: float = 0.3, offset_arcsec: Tuple[float, float] = (0.0, 0.0),
+                     method: str = "exact", err_method: Optional[str] = "cube", name: str = "nuclear",
+                     center_xy: Optional[Tuple[float, float]] = None) -> ApertureSpectrum:
+    """Sum a cube over a circular aperture.
+
+    radius_arcsec : aperture radius [arcsec] (default 0.3", a nuclear aperture).
+    offset_arcsec : (east, north) offset of the centre from the AGN position [arcsec]. Assumes sky-aligned
+        cubes (north up, east left: east = -x). Using offsets keeps the aperture on the same sky position in
+        every band, whatever the pixel grid.
+    center_xy : give the centre directly in 0-based pixels of this cube instead (overrides the offset).
+    method : ``"exact"`` (fractional pixel weights, default) or ``"center"`` (whole pixels).
+    err_method : ``"cube"`` (ERR in quadrature, weighted by the pixel fractions), ``"empirical"``,
+        ``"max"`` or ``None`` - as for :func:`extract_spectra`.
+
+    Spaxels outside the cube's observed field are excluded (``covered_frac`` reports the fraction of the
+    aperture that lies inside it) and channels without data (detector gaps) are NaN.
+    """
+    if center_xy is None:
+        if cube.agn_xy is None:
+            raise ValueError(f"cube '{cube.name}' has no AGN position (set_agn_positions / load_cubes)")
+        x0 = cube.agn_xy[0] - offset_arcsec[0] / cube.pixel_scale
+        y0 = cube.agn_xy[1] + offset_arcsec[1] / cube.pixel_scale
+    else:
+        x0, y0 = center_xy
+    r_pix = radius_arcsec / cube.pixel_scale
+    w_full = aperture_weights(cube.shape2d, x0, y0, r_pix, method)
+    footprint = cube_footprint(cube)
+    w = w_full * footprint
+    ideal = np.pi * r_pix ** 2
+    covered = float(w.sum() / ideal) if ideal > 0 else 0.0
+    data = np.asarray(cube.data, dtype=float)
+    flux = _sum_with_gaps(data, w)
+    err = None
+    if err_method is not None:
+        if err_method not in ("cube", "empirical", "max"):
+            raise ValueError("err_method must be 'cube', 'empirical', 'max' or None")
+        e_cube = None
+        if err_method in ("cube", "max"):
+            if cube.err is None:
+                raise ValueError(f"cube '{cube.name}' has no ERR data - load the cubes with load_err=True, "
+                                 "or use err_method='empirical'")
+            e_cube = _err_quadrature(cube.err, w)
+        if err_method == "cube":
+            err = e_cube
+        elif err_method == "empirical":
+            err = empirical_errors(flux)
+        else:
+            err = np.fmax(e_cube, empirical_errors(flux))
+        err = np.where(np.isfinite(flux), err, np.nan)
+    if w.sum() == 0:
+        flux[:] = np.nan
+        if err is not None:
+            err[:] = np.nan
+    return ApertureSpectrum(name, cube.name, cube.wave.copy(), flux, err, w, (float(x0), float(y0)),
+                            float(radius_arcsec), cube.pixel_scale, covered, err_method)
+
+
+def extract_apertures(cubes: Dict[str, Cube], apertures: Dict[str, dict], method: str = "exact",
+                      err_method: Optional[str] = "cube", min_covered: float = 0.9,
+                      verbose: bool = True) -> Dict[str, Dict[str, ApertureSpectrum]]:
+    """Aperture spectra in every cube.
+
+    apertures : ``{name: dict(radius_arcsec=0.3, offset_arcsec=(east, north))}``, offsets from the AGN [arcsec].
+    min_covered : bands where less than this fraction of the aperture lies inside the observed field are
+        dropped (set to NaN) - a partial aperture would bias the stitched spectrum.
+
+    Returns ``{aperture name: {cube name: ApertureSpectrum}}``.
+    """
+    out = {}
+    for name, ap in apertures.items():
+        out[name] = {}
+        for cname, cube in sorted(cubes.items(), key=lambda kv: kv[1].wave_range[0]):
+            sp = extract_aperture(cube, ap.get("radius_arcsec", 0.3), tuple(ap.get("offset_arcsec", (0.0, 0.0))),
+                                  method=method, err_method=err_method, name=name)
+            if sp.covered_frac < min_covered:
+                sp.flux[:] = np.nan
+                if sp.flux_err is not None:
+                    sp.flux_err[:] = np.nan
+            out[name][cname] = sp
+            if verbose:
+                flag = "" if sp.covered_frac >= min_covered else "  <- aperture outside the field: skipped"
+                print(f"{sp}{flag}")
+    return out
+
+
+def reference_band(spectra: Dict[str, object], component: str = "agn") -> str:
+    """The band :func:`stitch_spectra` uses as reference by default (largest sky area with usable data)."""
+    best, best_w = None, -1.0
+    for s in spectra.values():
+        f = np.asarray(getattr(s, component), float)
+        if (np.isfinite(f) & (f > 0)).sum() >= 5 and _weight(s, component) > best_w:
+            best, best_w = s.cube_name, _weight(s, component)
+    return best
+
+
+def subtract_spectra(wave_a, flux_a, err_a, wave_b, flux_b, err_b, scale="window",
+                     window: Tuple[float, float] = (5.0, 5.5), verbose: bool = True):
+    """``a - s * b`` on the wavelength grid of ``a`` (``b`` is interpolated onto it).
+
+    scale : ``"window"`` - ``s`` makes the median of ``s * b`` equal to that of ``a`` in ``window``
+        (rest micron); a number - fixed ``s`` (1 = plain difference).
+    Errors (if given) are combined in quadrature. Returns (wave, difference, error, s).
+    """
+    wa, fa = np.asarray(wave_a, float), np.asarray(flux_a, float)
+    fb = np.interp(wa, np.asarray(wave_b, float), np.asarray(flux_b, float), left=np.nan, right=np.nan)
+    eb = (np.interp(wa, np.asarray(wave_b, float), np.asarray(err_b, float), left=np.nan, right=np.nan)
+          if err_b is not None else np.zeros_like(wa))
+    ea = np.asarray(err_a, float) if err_a is not None else np.zeros_like(wa)
+    if isinstance(scale, str):
+        if scale != "window":
+            raise ValueError("scale must be 'window' or a number")
+        sel = (wa >= window[0]) & (wa <= window[1]) & np.isfinite(fa) & np.isfinite(fb) & (fb != 0)
+        if sel.sum() < 3:
+            raise ValueError(f"not enough points in the scaling window {window} um: the two spectra cover "
+                             f"{np.nanmin(wa):.2f}-{np.nanmax(wa):.2f} and {np.nanmin(wave_b):.2f}-"
+                             f"{np.nanmax(wave_b):.2f} um - choose a window inside both")
+        s = float(np.median(fa[sel]) / np.median(fb[sel]))
+    else:
+        s = float(scale)
+    diff = fa - s * fb
+    err = np.sqrt(ea ** 2 + (s * eb) ** 2)
+    if verbose:
+        frac_neg = np.nanmean(diff < 0) if np.isfinite(diff).any() else np.nan
+        print(f"scale factor s = {s:.4g}" + (f" (matched in {window[0]:g}-{window[1]:g} um)" if isinstance(scale, str) else "")
+              + f"; residual < 0 in {100 * frac_neg:.0f}% of channels")
+    return wa, diff, err, s

@@ -66,7 +66,7 @@ Results of every notebook are written to `notebooks/results/<name>/`.
 | 2 | Fit a thin rotating disc, a hollow bicone, or both (α-weighted) to the velocity maps — or skip and give literature values; draw the geometry | `fit_kinematics`, `fit_many`, `trend_with_ip`, `plot_geometry` |
 | 3 | In every spaxel fix both Gaussians' **velocities** (models) and **widths** (Step 1), fit only the amplitudes → disc fraction per line | `line_params`, `decompose_lines` |
 | 4 | Weighted stack of all lines on a common pc grid → final AGN-outflow fraction map, and the share of it dominated by each component | `stack_fraction_maps`, `fraction_summary` |
-| 5 | AGN- and star-formation-dominated spectra (with errors) across all bands (optionally: split a continuum map, `decompose_continuum`) | `extract_all`, `stitch_spectra` |
+| 5 | AGN- and star-formation-dominated spectra (with errors) across all bands; circular-aperture spectra (e.g. nuclear) for comparison (optionally: split a continuum map, `decompose_continuum`) | `extract_all`, `stitch_spectra`, `extract_apertures` |
 
 ## Install
 
@@ -200,6 +200,12 @@ the disc / redshifted cone). `inc_out` is the angle between the bicone axis and 
   resampled cube share noise), `"empirical"` (the measured channel-to-channel scatter of each spectrum), or `"max"`
   (the larger of the two). `stitch_spectra(..., with_errors=True)` carries them through the stitching, and the
   exported `component_spectra_*.txt` files have three columns: rest wavelength [µm], flux [Jy], error [Jy].
+* **Aperture spectra**: `btb.extract_apertures(cubes, {"nuclear": dict(radius_arcsec=0.3, offset_arcsec=(0, 0))})`
+  extracts spectra in circular apertures (radius in arcsec, centre as an east/north offset from the AGN, so the same
+  sky region in every band) with exact fractional pixel weights, errors, and the same gap / field-of-view handling;
+  stitch them with `stitch_spectra(..., "flux", reference=btb.reference_band(spectra, "agn"))`.
+  `btb.subtract_spectra(...)` subtracts a (scaled) spectrum from another, e.g. nuclear minus AGN-dominated.
+  Notebooks 01 and 02 end with a 0.3" nuclear-aperture example. Aperture spectra are not PSF-corrected.
 * **Exported map**: `results/<name>/stacked_fraction_map.fits` holds the AGN outflow fraction (primary), the disc
   fraction (`F_DISC`) and `N_LINES`, the number of lines contributing to each pixel.
 
@@ -217,7 +223,7 @@ breaking_the_blend/
   geometry.py    schematic of the disc + bicone geometry relative to the line of sight
   decompose.py   Step 3   constrained amplitude fits -> f_disc
   stacking.py    Step 4   weighted multi-line map, robustness checks, dominated fractions
-  extraction.py  Step 5   component spectra and errors, stitching, continuum split
+  extraction.py  Step 5   component and aperture spectra with errors, stitching, continuum split
   external.py    optional imported velocity / dispersion maps (3DBarolo, MOKA3D, ...)
   plotting.py    one function per figure of the paper
   mock.py        synthetic ring + bicone cubes in the real MIRI/MRS bands, with known truth

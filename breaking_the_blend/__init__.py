@@ -33,7 +33,9 @@ from .decompose import Decomposition, decompose_line, decompose_lines, line_para
 from .stacking import (StackedMap, stack_fraction_maps, line_weight, line_to_line_scatter,
                        compare_stacks, fraction_summary)
 from .extraction import (ComponentSpectra, extract_spectra, extract_all, stitch_spectra,
-                         decompose_continuum, fraction_on_cube, empirical_errors)
+                         decompose_continuum, fraction_on_cube, empirical_errors,
+                         ApertureSpectrum, aperture_weights, extract_aperture, extract_apertures,
+                         reference_band, subtract_spectra)
 from .external import ExternalMap, load_external_map
 from .project import Project, list_projects
 from .utils import save, load

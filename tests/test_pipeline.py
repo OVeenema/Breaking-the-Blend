@@ -147,6 +147,25 @@ def test_geometry_and_fractions():
     assert np.isclose(r["disc_dominated"], 1 / 3) and np.isclose(r["outflow_dominated"], 1 / 3)
 
 
+def test_apertures():
+    # exact weights reproduce the circle area; centre-method apertures equal a direct pixel sum
+    w = btb.aperture_weights((40, 40), 19.3, 20.7, 2.3)
+    assert abs(w.sum() - np.pi * 2.3 ** 2) < 0.1
+    cubes, truth = btb.mock.make_mock_cubes({k: btb.MRS_BANDS[k] for k in ("ch3-short", "ch3-medium")}, fov_arcsec=5)
+    btb.set_agn_positions(cubes, verbose=False)
+    c = cubes["ch3-short"]
+    s = btb.extract_aperture(c, 0.3, method="center", err_method=None)
+    assert np.allclose(s.flux, np.asarray(c.data, float)[:, s.weights > 0].sum(axis=1))
+    ap = btb.extract_apertures(cubes, {"nuc": dict(radius_arcsec=0.3), "off": dict(radius_arcsec=0.4, offset_arcsec=(0.6, 0.2))},
+                               verbose=False)
+    assert ap["off"]["ch3-short"].center_xy[0] < c.agn_xy[0]          # east = -x
+    wn, fn, en, sc = btb.stitch_spectra(ap["nuc"], "flux", with_errors=True, verbose=False)
+    assert np.all(np.isfinite(fn)) and np.all(en > 0)
+    wr, dr, er, s_ = btb.subtract_spectra(wn, fn, en, wn, 0.5 * fn, 0.5 * en, scale="window", window=(12.0, 12.5),
+                                          verbose=False)
+    assert abs(s_ - 2.0) < 1e-6 and np.nanmax(np.abs(dr)) < 1e-9
+
+
 def test_models_pa_convention():
     # disc receding side lies along pa_disc (east of north; +x = west, +y = north)
     p = dict(v_disc=200, R_disc=100, inc_disc=60, pa_disc=0)  # receding to the north
@@ -161,5 +180,6 @@ if __name__ == "__main__":
     test_unbounded_fitters()
     test_check_and_stitch()
     test_geometry_and_fractions()
+    test_apertures()
     test_full_pipeline(pathlib.Path(tempfile.mkdtemp()))
     print("all tests passed")

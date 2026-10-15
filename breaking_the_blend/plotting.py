@@ -660,3 +660,79 @@ def plot_truth_comparison(decomps: Dict, truth: Dict, ncols: int = 4):
                    r"$f_{\rm disc}$ recovered $-$ true")
     _map_labels(fig)
     return fig
+
+
+# ----------------------------------------------------------------------
+# Apertures
+# ----------------------------------------------------------------------
+def plot_apertures_on_map(stack, apertures: Dict, pc_per_arcsec: float, which: str = "f_out",
+                          lim_pc: Optional[float] = None, scalebar_pc: Optional[float] = None,
+                          title: Optional[str] = None, colors=None, ax=None):
+    """The stacked fraction map with circular apertures overlaid.
+
+    apertures : ``{name: dict(radius_arcsec=..., offset_arcsec=(east, north))}`` (as for
+        :func:`extract_apertures`). Offsets east are drawn to the left (+x of the map is west).
+    """
+    from matplotlib.patches import Circle
+    fig = plot_stacked_map(stack, which=which, lim_pc=lim_pc, scalebar_pc=scalebar_pc, title=title, ax=ax)
+    ax = ax or fig.axes[0]
+    colors = colors or ["k", "lime", "magenta", "orange", "cyan", "white"]
+    for k, (name, ap) in enumerate(apertures.items()):
+        r = ap.get("radius_arcsec", 0.3) * pc_per_arcsec
+        de, dn = ap.get("offset_arcsec", (0.0, 0.0))
+        x, y = -de * pc_per_arcsec, dn * pc_per_arcsec          # east = -x on the map
+        col = colors[k % len(colors)]
+        ax.add_patch(Circle((x, y), r, fill=False, ec=col, lw=2.0, zorder=6))
+        ax.text(x + 1.15 * r, y + 1.15 * r, f"{name} ({ap.get('radius_arcsec', 0.3):g}\")", color=col,
+                fontsize=11, zorder=6)
+    return fig
+
+
+def plot_spectra(spectra: Dict[str, tuple], colors: Optional[Dict[str, str]] = None, smooth: float = 0,
+                 err_scale: float = 1.0, err_alpha: float = 0.3, yscale: str = "log", ax=None, xlim=None,
+                 ylabel: str = "Flux density [Jy]"):
+    """Several spectra ``{label: (wave, flux[, error])}`` on one plot, errors as shaded bands."""
+    from scipy.ndimage import gaussian_filter1d
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 5.5), constrained_layout=True)
+    style_axes(ax)
+    default = ["cornflowerblue", "k", "crimson", "darkorange", "seagreen", "purple"]
+    for k, (lab, sp) in enumerate(spectra.items()):
+        w, f = np.asarray(sp[0], float), np.asarray(sp[1], float)
+        col = (colors or {}).get(lab, default[k % len(default)])
+        if len(sp) > 2 and sp[2] is not None:
+            e = np.asarray(sp[2], float) * err_scale
+            lo = f - e
+            if yscale == "log":
+                lo = np.clip(lo, np.nanmin(f[f > 0]) * 1e-2 if np.any(f > 0) else 1e-30, None)
+            ax.fill_between(w, lo, f + e, color=col, alpha=err_alpha, lw=0)
+        ax.plot(w, gaussian_filter1d(f, smooth) if smooth else f, color=col, lw=1.4, label=lab)
+    ax.set_yscale(yscale)
+    ax.set_xlabel(r"Rest-frame wavelength [$\mu$m]")
+    ax.set_ylabel(ylabel)
+    if xlim:
+        ax.set_xlim(*xlim)
+    ax.legend()
+    return ax.figure
+
+
+def plot_residual_spectrum(wave, diff, err=None, label: str = "residual", smooth: float = 0, ax=None,
+                           xlim=None, ylim=None):
+    """A difference spectrum on a linear scale, with a zero line and shaded errors."""
+    from scipy.ndimage import gaussian_filter1d
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 4.8), constrained_layout=True)
+    style_axes(ax)
+    d = gaussian_filter1d(diff, smooth) if smooth else diff
+    if err is not None:
+        ax.fill_between(wave, diff - err, diff + err, color="grey", alpha=0.35, lw=0, label=r"1$\sigma$ error")
+    ax.plot(wave, d, color="k", lw=1.2, label=label)
+    ax.axhline(0, color="crimson", lw=1, ls="--")
+    ax.set_xlabel(r"Rest-frame wavelength [$\mu$m]")
+    ax.set_ylabel("Flux density [Jy]")
+    if xlim:
+        ax.set_xlim(*xlim)
+    if ylim:
+        ax.set_ylim(*ylim)
+    ax.legend()
+    return ax.figure
