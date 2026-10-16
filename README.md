@@ -245,14 +245,7 @@ scripts/
 
 ## Contact
 
-Questions, problems or ideas? I am happy to help with applying the code to your data, and always interested in working
-with users on new applications of the method. Please get in touch by email at
-[oscar.veenema@physics.ox.ac.uk](mailto:oscar.veenema@physics.ox.ac.uk), or open an issue on this repository.
-
-## Getting in touch
-
-Questions, problems, or ideas for applying Breaking the Blend to your own data are very welcome - I am happy to help
-with setting it up for a new target and open to collaborating. Please get in touch by email:
+Questions, problems, or ideas for applying Breaking the Blend to your own data are very welcome. Please get in touch by email:
 **Oscar Veenema** - [oscar.veenema@physics.ox.ac.uk](mailto:oscar.veenema@physics.ox.ac.uk).
 
 ## Citation
