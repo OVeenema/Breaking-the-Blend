@@ -62,10 +62,11 @@ def _sum_with_gaps(data, w, min_valid=0.5):
     """Weighted sum over spaxels per channel; channels where most of the contributing spaxels
     have no data (detector gaps / edges are stored as exact zeros) become NaN."""
     valid = (data != 0)
-    wsum = np.einsum("lij,ij->l", valid.astype(float), w)
+    aw = np.abs(w)
+    wsum = np.einsum("lij,ij->l", valid.astype(float), aw)
     tot = np.einsum("lij,ij->l", data, w)
     out = tot.astype(float)
-    out[wsum < min_valid * w.sum()] = np.nan
+    out[wsum < min_valid * aw.sum()] = np.nan
     return out
 
 
@@ -188,22 +189,26 @@ def _weight(s, component: str) -> float:
     return n * s.pixel_scale ** 2
 
 
-def _merge(W, F, E, w, f, e, min_overlap_points):
+def _merge(W, F, E, w, f, e, min_overlap_points, k_fixed=None):
     """Scale (w, f, e) to (W, F) in their overlap and merge with a linear blend (errors are
-    scaled and combined consistently). Returns (W, F, E, scale) or None if no usable overlap."""
+    scaled and combined consistently). With ``k_fixed`` that factor is used instead of the
+    measured flux ratio. Returns (W, F, E, scale) or None if no usable overlap."""
     lo, hi = max(W.min(), w.min()), min(W.max(), w.max())
     cur = (w >= lo) & (w <= hi)
     if lo >= hi or cur.sum() < min_overlap_points:
         return None
-    ratio = np.interp(w[cur], W, F) / f[cur]
-    ratio = ratio[np.isfinite(ratio) & (ratio > 0)]
-    if ratio.size < min_overlap_points:
-        return None
-    med = np.median(ratio)
-    mad = 1.4826 * np.median(np.abs(ratio - med))
-    if mad > 0:
-        ratio = ratio[np.abs(ratio - med) < 3 * mad]
-    k = float(np.median(ratio))
+    if k_fixed is not None:
+        k = float(k_fixed)
+    else:
+        ratio = np.interp(w[cur], W, F) / f[cur]
+        ratio = ratio[np.isfinite(ratio) & (ratio > 0)]
+        if ratio.size < min_overlap_points:
+            return None
+        med = np.median(ratio)
+        mad = 1.4826 * np.median(np.abs(ratio - med))
+        if mad > 0:
+            ratio = ratio[np.abs(ratio - med) < 3 * mad]
+        k = float(np.median(ratio))
     f, e = f * k, e * k
     grid = np.unique(np.concatenate([W[(W >= lo) & (W <= hi)], w[cur]]))
     t = (grid - lo) / (hi - lo)
@@ -222,7 +227,7 @@ def _merge(W, F, E, w, f, e, min_overlap_points):
 
 def stitch_spectra(spectra: Dict[str, object], component: str = "agn",
                    reference: Optional[str] = None, min_overlap_points: int = 5, verbose: bool = True,
-                   with_errors: bool = False):
+                   with_errors: bool = False, scales: Optional[Dict[str, float]] = None):
     """Join the per-band spectra into one.
 
     One band is the **reference** (kept unscaled); the others are scaled band by band outwards
@@ -236,6 +241,10 @@ def stitch_spectra(spectra: Dict[str, object], component: str = "agn",
     reference : band kept unscaled. To put an aperture spectrum on the same footing as the AGN-dominated
         spectrum, pass the same reference band (:func:`reference_band`).
 
+    scales : ``{band: factor}`` to apply instead of measuring the factors - e.g. the factors of the
+        AGN-dominated spectrum, so that other spectra (or differences) are stitched identically.
+        Fluxes may then be negative (e.g. a difference spectrum).
+
     Returns (wave, flux, scale_factors), or (wave, flux, error, scale_factors) with
     ``with_errors=True`` - the errors are scaled with each band and combined in the blended
     overlaps (they do not include the uncertainty of the scale factors themselves).
@@ -246,27 +255,33 @@ def stitch_spectra(spectra: Dict[str, object], component: str = "agn",
         f = np.asarray(getattr(s, component), float)
         err = getattr(s, f"{component}_err", None)
         e = np.asarray(err, float) if err is not None else np.full_like(f, np.nan)
-        ok = np.isfinite(w) & np.isfinite(f) & (f > 0)
+        ok = np.isfinite(w) & np.isfinite(f) & ((f > 0) if scales is None else True)
+        if scales is not None and s.cube_name not in scales:
+            ok[:] = False
         if ok.sum() >= min_overlap_points:
             o = np.argsort(w[ok])
-            segs[s.cube_name] = (w[ok][o], f[ok][o], e[ok][o], _weight(s, component))
+            k0 = 1.0 if scales is None else float(scales[s.cube_name])
+            segs[s.cube_name] = (w[ok][o], k0 * f[ok][o], k0 * e[ok][o], _weight(s, component))
         elif verbose:
             print(f"{s.cube_name}: no usable {component} spectrum - skipped")
     if not segs:
         raise ValueError(f"No band has a usable {component} spectrum")
     names = sorted(segs, key=lambda n: segs[n][0][0])
+    if scales is not None:          # factors already applied: merge without rescaling
+        reference = reference if reference in segs else max(names, key=lambda n: segs[n][3])
     ref = reference if reference is not None else max(names, key=lambda n: segs[n][3])
     if ref not in segs:
         raise KeyError(f"reference band '{ref}' has no usable spectrum ({list(segs)})")
     i0 = names.index(ref)
     W, F, E = segs[ref][0], segs[ref][1], segs[ref][2]
-    scales = {ref: 1.0}
+    fixed = scales
+    scales = {ref: 1.0 if fixed is None else float(fixed[ref])}
     order = names[i0 + 1:] + names[:i0][::-1]          # redwards first, then bluewards
     for n in order:
         w, f, e, _ = segs[n]
-        res = _merge(W, F, E, w, f, e, min_overlap_points)
+        res = _merge(W, F, E, w, f, e, min_overlap_points, k_fixed=None if fixed is None else 1.0)
         if res is None:
-            scales[n] = 1.0
+            scales[n] = 1.0 if fixed is None else float(fixed[n])
             keep = (w > W.max()) | (w < W.min())
             W, F, E = (np.concatenate([W, w[keep]]), np.concatenate([F, f[keep]]),
                        np.concatenate([E, e[keep]]))
@@ -275,7 +290,8 @@ def stitch_spectra(spectra: Dict[str, object], component: str = "agn",
             if verbose:
                 print(f"{n}: no usable overlap - appended unscaled")
             continue
-        W, F, E, scales[n] = res
+        W, F, E, k = res
+        scales[n] = k if fixed is None else float(fixed[n])
         if verbose:
             print(f"{n}: scale = {scales[n]:.3f}")
     if verbose:
@@ -452,11 +468,13 @@ def reference_band(spectra: Dict[str, object], component: str = "agn") -> str:
     return best
 
 
-def subtract_spectra(wave_a, flux_a, err_a, wave_b, flux_b, err_b, scale="window",
+def subtract_spectra(wave_a, flux_a, err_a, wave_b, flux_b, err_b, scale=1.0,
                      window: Tuple[float, float] = (5.0, 5.5), verbose: bool = True):
-    """``a - s * b`` on the wavelength grid of ``a`` (``b`` is interpolated onto it).
+    """``a - s * b`` on the wavelength grid of ``a`` (``b`` is interpolated onto it), for already
+    stitched spectra. Note: if ``a`` and ``b`` share pixels (e.g. a region and an aperture inside it),
+    use :func:`subtract_aperture` instead - it avoids double-counting their errors.
 
-    scale : ``"window"`` - ``s`` makes the median of ``s * b`` equal to that of ``a`` in ``window``
+    scale : 1 (default, plain difference), ``"window"`` - ``s`` makes the median of ``s * b`` equal to that of ``a`` in ``window``
         (rest micron); a number - fixed ``s`` (1 = plain difference).
     Errors (if given) are combined in quadrature. Returns (wave, difference, error, s).
     """
@@ -483,3 +501,65 @@ def subtract_spectra(wave_a, flux_a, err_a, wave_b, flux_b, err_b, scale="window
         print(f"scale factor s = {s:.4g}" + (f" (matched in {window[0]:g}-{window[1]:g} um)" if isinstance(scale, str) else "")
               + f"; residual < 0 in {100 * frac_neg:.0f}% of channels")
     return wa, diff, err, s
+
+
+def subtract_aperture(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
+                      aperture_spectra: Dict[str, ApertureSpectrum], component: str = "agn",
+                      scale: float = 1.0, err_method: Optional[str] = "same",
+                      verbose: bool = True) -> Dict[str, ApertureSpectrum]:
+    """Spectrum of a component region (e.g. the AGN-dominated spaxels) with an aperture (e.g. the
+    nuclear point source) removed, computed **per band on the pixels themselves**:
+
+        weights = region weights - scale x (aperture weights inside the region)
+
+    With ``scale = 1`` this is the region outside the aperture. ``scale`` > 1 can stand for a PSF
+    aperture correction (the aperture misses part of a point source's flux). Doing this on the pixels
+    avoids double-counting the shared pixels in the errors; only the part of the aperture inside the
+    region is removed (the covered fraction is printed).
+
+    err_method : ``"same"`` (as the region spectra), or ``"cube"``, ``"empirical"``, ``"max"``, ``None``.
+    Returns ``{band: ApertureSpectrum}`` - stitch them with
+    ``stitch_spectra(result, "flux", scales=<scale factors of the region spectrum>)``.
+    """
+    out = {}
+    for band, sp in spectra.items():
+        if band not in aperture_spectra or band not in cubes:
+            continue
+        ap = aperture_spectra[band]
+        cube = cubes[band]
+        mask = sp.agn_mask if component == "agn" else sp.sf_mask
+        if mask is not None:
+            w_reg = mask.astype(float)
+        else:                                   # method="weighted": fractional weights
+            ok = np.isfinite(sp.f_disc_map) & (sp.footprint if sp.footprint is not None else True)
+            fd = np.where(ok, sp.f_disc_map, 0.0)
+            w_reg = np.where(ok, 1.0 - fd if component == "agn" else fd, 0.0)
+        inside = w_reg > 0
+        w_ap_in = ap.weights * inside
+        frac_in = float(w_ap_in.sum() / ap.weights.sum()) if ap.weights.sum() > 0 else 0.0
+        w = w_reg - scale * w_ap_in
+        data = np.asarray(cube.data, float)
+        flux = _sum_with_gaps(data, w)
+        em = sp.err_method if err_method == "same" else err_method
+        err = None
+        if em is not None:
+            e_cube = _err_quadrature(cube.err, w) if (em in ("cube", "max") and cube.err is not None) else None
+            if em == "cube":
+                err = e_cube
+            elif em == "empirical" or (em == "max" and e_cube is None):
+                err = empirical_errors(flux)
+            elif em == "max":
+                err = np.fmax(e_cube, empirical_errors(flux))
+            if err is not None:
+                err = np.where(np.isfinite(flux), err, np.nan)
+        if not np.isfinite(getattr(sp, component)).any() or not np.isfinite(ap.flux).any():
+            flux[:] = np.nan
+            if err is not None:
+                err[:] = np.nan
+        res = ApertureSpectrum(f"{component}_minus_{ap.name}", band, cube.wave.copy(), flux, err, w,
+                               ap.center_xy, ap.radius_arcsec, cube.pixel_scale, ap.covered_frac, em)
+        out[band] = res
+        if verbose:
+            print(f"{band:>14s}: {100 * frac_in:5.1f}% of the aperture lies in the {component} region"
+                  + ("" if frac_in > 0.99 else "  (only that part is removed)"))
+    return out

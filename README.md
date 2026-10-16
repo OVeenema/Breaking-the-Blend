@@ -202,10 +202,12 @@ the disc / redshifted cone). `inc_out` is the angle between the bicone axis and 
   exported `component_spectra_*.txt` files have three columns: rest wavelength [µm], flux [Jy], error [Jy].
 * **Aperture spectra**: `btb.extract_apertures(cubes, {"nuclear": dict(radius_arcsec=0.3, offset_arcsec=(0, 0))})`
   extracts spectra in circular apertures (radius in arcsec, centre as an east/north offset from the AGN, so the same
-  sky region in every band) with exact fractional pixel weights, errors, and the same gap / field-of-view handling;
-  stitch them with `stitch_spectra(..., "flux", reference=btb.reference_band(spectra, "agn"))`.
-  `btb.subtract_spectra(...)` subtracts a (scaled) spectrum from another, e.g. nuclear minus AGN-dominated.
-  Notebooks 01 and 02 end with a 0.3" nuclear-aperture example. Aperture spectra are not PSF-corrected.
+  sky region in every band) with exact fractional pixel weights, errors, and the same gap / field-of-view handling.
+  Stitch them with the AGN-dominated spectrum's band scale factors (`stitch_spectra(..., "flux", scales=...)`) so
+  the two are directly comparable. `btb.subtract_aperture(cubes, spectra, aperture_spectra["nuclear"], "agn")`
+  removes the aperture from the AGN-dominated region per band, on the pixels themselves: AGN-dominated minus nuclear
+  (point source), i.e. mainly the outflow, without double-counting the shared pixels in the errors. Notebooks 01 and
+  02 end with a 0.3" nuclear-aperture example. Aperture spectra are not PSF-corrected.
 * **Exported map**: `results/<name>/stacked_fraction_map.fits` holds the AGN outflow fraction (primary), the disc
   fraction (`F_DISC`) and `N_LINES`, the number of lines contributing to each pixel.
 
@@ -240,6 +242,18 @@ scripts/
 * `percentile_over="all"` reproduces the original flux masking (percentile over the whole array, incl. empty
   padding); `"fov"` uses only spaxels inside the field of view.
 * Fit weights: unweighted by default; `weighting="err"` (ERR extension) or `"sqrt"` (original) available.
+
+## Contact
+
+Questions, problems or ideas? I am happy to help with applying the code to your data, and always interested in working
+with users on new applications of the method. Please get in touch by email at
+[oscar.veenema@physics.ox.ac.uk](mailto:oscar.veenema@physics.ox.ac.uk), or open an issue on this repository.
+
+## Getting in touch
+
+Questions, problems, or ideas for applying Breaking the Blend to your own data are very welcome - I am happy to help
+with setting it up for a new target and open to collaborating. Please get in touch by email:
+**Oscar Veenema** - [oscar.veenema@physics.ox.ac.uk](mailto:oscar.veenema@physics.ox.ac.uk).
 
 ## Citation
 

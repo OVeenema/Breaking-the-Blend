@@ -164,6 +164,15 @@ def test_apertures():
     wr, dr, er, s_ = btb.subtract_spectra(wn, fn, en, wn, 0.5 * fn, 0.5 * en, scale="window", window=(12.0, 12.5),
                                           verbose=False)
     assert abs(s_ - 2.0) < 1e-6 and np.nanmax(np.abs(dr)) < 1e-9
+    # region minus aperture, per band: equals the plain difference when the aperture lies inside the region
+    from breaking_the_blend.extraction import ComponentSpectra
+    reg = np.zeros(c.shape2d, bool)
+    reg[max(int(c.agn_xy[1]) - 6, 0):int(c.agn_xy[1]) + 7, max(int(c.agn_xy[0]) - 6, 0):int(c.agn_xy[0]) + 7] = True
+    data = np.asarray(c.data, float)
+    cs = ComponentSpectra("ch3-short", c.wave, data[:, reg].sum(axis=1), np.full(c.wave.size, np.nan), reg, ~reg,
+                          np.zeros(c.shape2d), "threshold", c.pixel_scale, None, err_method=None)
+    diff = btb.subtract_aperture(cubes, {"ch3-short": cs}, ap["nuc"], "agn", err_method=None, verbose=False)
+    assert np.allclose(diff["ch3-short"].flux, cs.agn - ap["nuc"]["ch3-short"].flux)
 
 
 def test_models_pa_convention():
