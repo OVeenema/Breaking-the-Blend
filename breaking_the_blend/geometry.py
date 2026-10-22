@@ -265,6 +265,15 @@ def plot_sky_view(params: Dict[str, float], ax=None, length_pc: Optional[float] 
     return ax.figure
 
 
+def _add3d(ax, col):
+    """add_collection3d without auto-scaling the axes (the limits are set explicitly); the ``autolim``
+    keyword only exists from matplotlib 3.9 - older versions do not auto-scale 3-D collections anyway."""
+    try:
+        ax.add_collection3d(col, autolim=False)
+    except TypeError:
+        ax.add_collection3d(col)
+
+
 def plot_3d_view(params: Dict[str, float], ax=None, length_pc: Optional[float] = None,
                  disc_radius_pc: Optional[float] = None, disc_near_side: int = 1, elev: float = 35.0,
                  azim: float = -75.0, n_phi: int = 48, n_s: int = 10, show_disc: bool = True,
@@ -281,23 +290,22 @@ def plot_3d_view(params: Dict[str, float], ax=None, length_pc: Optional[float] =
     if show_disc:
         psi = np.linspace(0, 2 * np.pi, 121)
         rim = R * (np.cos(psi)[:, None] * m + np.sin(psi)[:, None] * u)
-        ax.add_collection3d(Poly3DCollection([rim], facecolors=DISC, alpha=0.18, edgecolors="none"), autolim=False)
+        _add3d(ax, Poly3DCollection([rim], facecolors=DISC, alpha=0.18, edgecolors="none"))
         segs = [r * (np.cos(psi)[:, None] * m + np.sin(psi)[:, None] * u) for r in np.linspace(R / 5, R, 5)]
         segs += [np.array([[0, 0, 0], R * (np.cos(p) * m + np.sin(p) * u)]) for p in np.deg2rad(np.arange(0, 360, 20))]
-        ax.add_collection3d(Line3DCollection(segs, colors="k", linewidths=0.3, alpha=0.4), autolim=False)
+        _add3d(ax, Line3DCollection(segs, colors="k", linewidths=0.3, alpha=0.4))
     surfaces = [(g["theta_out"], 0.38)] + ([(g["theta_in"], 0.12)] if g["theta_in"] > 0.5 else [])
     for axis, col in ((a, RED), (-a, BLUE)):
         for th, alpha in surfaces:
             q = _cone_quads(axis, th, L, n_phi, n_s)
             hid = _hidden(q.mean(axis=1), n, R) if show_disc else np.zeros(len(q), bool)
             if (~hid).any():
-                ax.add_collection3d(Poly3DCollection(q[~hid], facecolors=col, edgecolors="none", alpha=alpha),
-                                    autolim=False)
+                _add3d(ax, Poly3DCollection(q[~hid], facecolors=col, edgecolors="none", alpha=alpha))
             qc = _cone_quads(axis, th, L, 24, 5)
             hc = _hidden(qc.mean(axis=1), n, R) if show_disc else np.zeros(len(qc), bool)
             if hc.any():
                 edges = np.concatenate([qc[hc][:, [0, 1]], qc[hc][:, [1, 2]]])
-                ax.add_collection3d(Line3DCollection(edges, colors=col, linewidths=0.4, alpha=0.6), autolim=False)
+                _add3d(ax, Line3DCollection(edges, colors=col, linewidths=0.4, alpha=0.6))
         if show_disc:
             for th in thetas:
                 for end in _disc_crossings(axis, th, n, min(L, R)):
