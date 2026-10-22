@@ -175,6 +175,16 @@ def test_apertures():
     assert np.allclose(diff["ch3-short"].flux, cs.agn - ap["nuc"]["ch3-short"].flux)
 
 
+def test_empirical_errors():
+    # noise is recovered on a steep continuum with resolved lines, and never returns zeros on slopes
+    from breaking_the_blend.extraction import empirical_errors
+    rng = np.random.default_rng(0)
+    x = np.linspace(5, 28, 8000)
+    f = 0.5 * (x / 10) ** 2 + 3 * np.exp(-0.5 * ((x - 12.8) / 0.02) ** 2) + rng.normal(0, 0.01, x.size)
+    e = empirical_errors(f)
+    assert np.all(e > 0) and abs(np.median(e) / 0.01 - 1) < 0.1
+
+
 def test_models_pa_convention():
     # disc receding side lies along pa_disc (east of north; +x = west, +y = north)
     p = dict(v_disc=200, R_disc=100, inc_disc=60, pa_disc=0)  # receding to the north
@@ -190,5 +200,6 @@ if __name__ == "__main__":
     test_check_and_stitch()
     test_geometry_and_fractions()
     test_apertures()
+    test_empirical_errors()
     test_full_pipeline(pathlib.Path(tempfile.mkdtemp()))
     print("all tests passed")

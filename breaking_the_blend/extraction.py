@@ -75,22 +75,30 @@ def _err_quadrature(err, w):
     return np.sqrt(np.einsum("lij,ij->l", np.asarray(err, float) ** 2, w ** 2))
 
 
-def empirical_errors(flux, window: int = 31, detrend: int = 7) -> np.ndarray:
-    """Noise estimated from the spectrum itself: the robust (MAD) scatter of the flux about a
-    running median (``detrend`` channels), measured in a sliding ``window`` of channels.
-    It includes noise correlated between spaxels (which the pipeline ERR ignores) but is
-    inflated close to strong, narrow lines."""
+def empirical_errors(flux, window: int = 31, detrend=None) -> np.ndarray:
+    """Noise from the spectrum itself (1 sigma per channel): robust scatter of the second difference
+    d_i = f_i - (f_{i-1} + f_{i+1}) / 2 in a sliding window of ``window`` channels, scaled by
+    1/sqrt(1.5) (for independent noise var(d) = 1.5 sigma^2). Insensitive to smooth continuum slopes and
+    resolved line wings; still inflated at strong, barely resolved lines. ``detrend`` is ignored (kept for
+    backwards compatibility)."""
     from scipy.ndimage import median_filter
     f = np.asarray(flux, float)
-    ok = np.isfinite(f)
     out = np.full_like(f, np.nan)
-    if ok.sum() < window:
+    ok = np.isfinite(f)
+    if ok.sum() < max(window, 5):
         return out
     fi = np.interp(np.arange(f.size), np.flatnonzero(ok), f[ok])
-    resid = fi - median_filter(fi, size=detrend, mode="nearest")
-    mad = median_filter(np.abs(resid - median_filter(resid, size=window, mode="nearest")), size=window, mode="nearest")
-    # residual about a 'detrend'-channel median underestimates the per-channel scatter slightly
-    out[ok] = 1.4826 * mad[ok] * np.sqrt(detrend / (detrend - 1.0))
+    d = np.zeros_like(fi)
+    d[1:-1] = fi[1:-1] - 0.5 * (fi[:-2] + fi[2:])
+    d[0], d[-1] = d[1], d[-2]
+    sig = 1.4826 * median_filter(np.abs(d), size=window, mode="nearest") / np.sqrt(1.5)
+    pos = sig > 0
+    if not pos.any():
+        return out
+    # channels in exactly linear segments (e.g. interpolated) would get 0: use the nearest positive value
+    if (~pos).any():
+        sig[~pos] = np.interp(np.flatnonzero(~pos), np.flatnonzero(pos), sig[pos])
+    out[ok] = sig[ok]
     return out
 
 
