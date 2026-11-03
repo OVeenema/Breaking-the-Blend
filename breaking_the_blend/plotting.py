@@ -736,3 +736,22 @@ def plot_residual_spectrum(wave, diff, err=None, label: str = "residual", smooth
         ax.set_ylim(*ylim)
     ax.legend()
     return ax.figure
+
+
+def plot_psf_fractions(fractions: Dict, ax=None):
+    """PSF correction factors per band: the fraction of the point source inside the nuclear aperture (EE) and the
+    fractions that leak into the AGN- and SF-dominated regions, against wavelength."""
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 4.8), constrained_layout=True)
+    style_axes(ax)
+    first = True
+    for band, d in sorted(fractions.items(), key=lambda kv: kv[1]["wave"][0]):
+        ax.plot(d["wave"], d["ee"], color="k", lw=1.6, label="in nuclear aperture (EE)" if first else None)
+        ax.plot(d["wave"], d["f_agn"], color="cornflowerblue", lw=1.6, label="leaked into AGN-dominated region" if first else None)
+        ax.plot(d["wave"], d["f_sf"], color="crimson", lw=1.6, label="leaked into SF-dominated region" if first else None)
+        first = False
+    ax.set_yscale("log")
+    ax.set_xlabel(r"Rest-frame wavelength [$\mu$m]")
+    ax.set_ylabel("Fraction of the AGN point-source flux")
+    ax.legend(fontsize=10)
+    return ax.figure

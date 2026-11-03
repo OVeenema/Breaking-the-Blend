@@ -185,6 +185,43 @@ def test_empirical_errors():
     assert np.all(e > 0) and abs(np.median(e) / 0.01 - 1) < 0.1
 
 
+def test_psf_correction():
+    # inject a point source with a known spectrum (Gaussian PSF, same model as the correction) into mock cubes and
+    # compare with the same correction applied without it: the AGN spectrum must gain exactly the point source,
+    # and the AGN-outflow / SF spectra must not change (the point source and its PSF leakage are removed)
+    from breaking_the_blend.psf import psf_on_cube
+    cubes, truth = btb.mock.make_mock_cubes({k: btb.MRS_BANDS[k] for k in ("ch3-short", "ch3-medium")}, fov_arcsec=10)
+    btb.set_agn_positions(cubes, verbose=False)
+    lines = btb.assign_cubes({n: l.update(mask_percentile=40) for n, l in btb.get_lines(["NeII", "NeV"]).items()},
+                             cubes, verbose=False, drop_missing=True)
+    lm = btb.fit_lines(cubes, lines, show_progress=False, fit_double=False)
+    d = btb.decompose_lines(lm, btb.line_params(lm, truth["params"], verbose=False),
+                            {n: {"disc": 70, "outflow": 200} for n in lm}, show_progress=False)
+    stack = btb.stack_fraction_maps(d, verbose=False)
+
+    def run(annulus):
+        sp = btb.extract_all(cubes, stack, err_method="cube")
+        ap = btb.extract_apertures(cubes, {"nuclear": dict(radius_arcsec=0.3)}, err_method="cube", verbose=False)
+        return btb.psf_correct(cubes, sp, ap["nuclear"], model="gaussian", n_wave=8, annulus_arcsec=annulus,
+                               verbose=False)[0]
+    r0 = {a: run(a) for a in (None, (0.6, 0.9))}
+    for c in cubes.values():                                                  # add 0.05 Jy x (lam/12)^2
+        S = 0.05 * (c.wave / 12.0) ** 2
+        for i in range(0, len(c.wave), 25):
+            P = psf_on_cube(c, c.wave[i] * (1 + c.z), "gaussian")
+            c.data[i:i + 25] += (S[i:i + 25, None, None] * P[None]).astype(c.data.dtype)
+    b = "ch3-short"
+    S = 0.05 * (cubes[b].wave / 12.0) ** 2
+    for a in (None, (0.6, 0.9)):
+        r1 = run(a)
+        assert np.nanmedian(np.abs((r1["AGN"][b].flux - r0[a]["AGN"][b].flux) / S - 1)) < 0.02
+        for name in ("AGN-outflow", "SF"):
+            if b in r1[name]:
+                ref = np.nanmedian(np.abs(r0[a][name][b].flux)) + 1e-12
+                assert np.nanmedian(np.abs(r1[name][b].flux - r0[a][name][b].flux)) < 0.02 * max(ref, np.nanmedian(S))
+        assert np.all(np.isfinite(r1["AGN-outflow"][b].flux_err))
+
+
 def test_models_pa_convention():
     # disc receding side lies along pa_disc (east of north; +x = west, +y = north)
     p = dict(v_disc=200, R_disc=100, inc_disc=60, pa_disc=0)  # receding to the north
@@ -201,5 +238,6 @@ if __name__ == "__main__":
     test_geometry_and_fractions()
     test_apertures()
     test_empirical_errors()
+    test_psf_correction()
     test_full_pipeline(pathlib.Path(tempfile.mkdtemp()))
     print("all tests passed")

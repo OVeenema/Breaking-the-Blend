@@ -208,6 +208,11 @@ the disc / redshifted cone). `inc_out` is the angle between the bicone axis and 
   removes the aperture from the AGN-dominated region per band, on the pixels themselves: AGN-dominated minus nuclear
   (point source), i.e. mainly the outflow, without double-counting the shared pixels in the errors. Notebooks 01 and
   02 end with a 0.3" nuclear-aperture example. Aperture spectra are not PSF-corrected.
+* **PSF correction**: `btb.psf_correct(cubes, spectra, aperture_spectra["nuclear"], model="webbpsf")` treats the
+  nuclear aperture as the AGN point source and uses STPSF/WebbPSF (or a Gaussian) PSFs to give the aperture-corrected
+  **AGN** spectrum, the **AGN-outflow** spectrum (AGN-dominated region with the point source removed) and the **SF**
+  spectrum (SF-dominated region with the AGN's PSF wings removed), with exact error propagation. Notebooks 01 and 02,
+  Section 9. The instrument PSF model needs `pip install stpsf` and its data files (https://stpsf.readthedocs.io).
 * **Exported map**: `results/<name>/stacked_fraction_map.fits` holds the AGN outflow fraction (primary), the disc
   fraction (`F_DISC`) and `N_LINES`, the number of lines contributing to each pixel.
 
@@ -226,6 +231,7 @@ breaking_the_blend/
   decompose.py   Step 3   constrained amplitude fits -> f_disc
   stacking.py    Step 4   weighted multi-line map, robustness checks, dominated fractions
   extraction.py  Step 5   component and aperture spectra with errors, stitching, continuum split
+  psf.py         PSF correction of the AGN point source in the extracted spectra (STPSF / Gaussian PSFs)
   external.py    optional imported velocity / dispersion maps (3DBarolo, MOKA3D, ...)
   plotting.py    one function per figure of the paper
   mock.py        synthetic ring + bicone cubes in the real MIRI/MRS bands, with known truth
@@ -245,7 +251,14 @@ scripts/
 
 ## Contact
 
-Questions, problems, or ideas for applying Breaking the Blend to your own data are very welcome. Please get in touch by email:
+Questions, problems or ideas? I am happy to help with applying the code to your data, and always interested in working
+with users on new applications of the method. Please get in touch by email at
+[oscar.veenema@physics.ox.ac.uk](mailto:oscar.veenema@physics.ox.ac.uk), or open an issue on this repository.
+
+## Getting in touch
+
+Questions, problems, or ideas for applying Breaking the Blend to your own data are very welcome - I am happy to help
+with setting it up for a new target and open to collaborating. Please get in touch by email:
 **Oscar Veenema** - [oscar.veenema@physics.ox.ac.uk](mailto:oscar.veenema@physics.ox.ac.uk).
 
 ## Citation

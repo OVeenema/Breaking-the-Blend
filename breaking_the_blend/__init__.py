@@ -39,6 +39,7 @@ from .extraction import (ComponentSpectra, extract_spectra, extract_all, stitch_
 from .external import ExternalMap, load_external_map
 from .project import Project, list_projects
 from .utils import save, load
+from .psf import psf_correct, psf_on_cube, psf_fwhm_arcsec
 from .geometry import plot_geometry, plot_sky_view, plot_3d_view, mean_geometry, geometry_params
 from .mock import MRS_BANDS, NIRSPEC_BANDS
 from . import plotting, mock
