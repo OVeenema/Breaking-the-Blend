@@ -96,7 +96,9 @@ def _webbpsf_image_cached(cube_name, lam_obs_um, pixscale_o, n, oversample):
         disp, filt = name.upper().split("-")[:2]
         inst.disperser, inst.filter = disp, filt
     inst.pixelscale = pixscale_o * oversample
-    hdul = inst.calc_psf(monochromatic=lam_obs_um * 1e-6, oversample=oversample, fov_arcsec=n * pixscale_o)
+    with warnings.catch_warnings():                    # field-point clipping notices of the OTE model are harmless
+        warnings.filterwarnings("ignore", message=".*field dependence model.*")
+        hdul = inst.calc_psf(monochromatic=lam_obs_um * 1e-6, oversample=oversample, fov_arcsec=n * pixscale_o)
     img = np.asarray(hdul[0].data, float)
     # crop / pad to n x n around the centre
     out = np.zeros((n, n))
@@ -153,6 +155,41 @@ def psf_on_cube(cube: Cube, lam_obs_um: float, model: str = "webbpsf", oversampl
     return vals.reshape(ny, nx, oversample, oversample).sum(axis=(2, 3))
 
 
+def _fit_point_source(cube, lam_s, Ps, r_fit):
+    """Per channel, fit the spaxels within r_fit of the AGN with  S x PSF + B0 + B1 r  (point source + a smooth,
+    centrally sloped extended component; linear least squares weighted by the ERR cube). PSFs between the sample
+    wavelengths are interpolated linearly. Returns (S, err_S) in Jy (total point-source flux)."""
+    from .extraction import cube_footprint
+    ny, nx = cube.shape2d
+    x0, y0 = cube.agn_xy
+    yy, xx = np.indices((ny, nx))
+    r = np.hypot(xx - x0, yy - y0) * cube.pixel_scale
+    sel = (r <= r_fit) & cube_footprint(cube)
+    rs = r[sel]
+    Psel = np.array([P[sel] for P in Ps])
+    data = np.asarray(cube.data, float)
+    err = np.asarray(cube.err, float) if cube.err is not None else None
+    n = len(cube.wave)
+    S, eS = np.full(n, np.nan), np.full(n, np.nan)
+    fidx = np.interp(cube.wave, lam_s, np.arange(len(lam_s)))
+    for l in range(n):
+        y = data[l][sel]
+        ok = np.isfinite(y) & (y != 0)
+        if ok.sum() < 8:
+            continue
+        i0 = min(int(np.floor(fidx[l])), len(lam_s) - 1); i1 = min(i0 + 1, len(lam_s) - 1); t = fidx[l] - i0
+        p = (1 - t) * Psel[i0] + t * Psel[i1]
+        A = np.vstack([p, np.ones_like(rs), rs]).T[ok]
+        w = 1.0 / err[l][sel][ok] if err is not None else np.ones(ok.sum())
+        w = np.where(np.isfinite(w) & (w > 0), w, 0.0)
+        Aw, yw = A * w[:, None], y[ok] * w
+        coef, *_ = np.linalg.lstsq(Aw, yw, rcond=None)
+        cov = np.linalg.pinv(Aw.T @ Aw)
+        chi2 = np.sum((Aw @ coef - yw) ** 2) / max(ok.sum() - 3, 1)
+        S[l], eS[l] = coef[0], np.sqrt(max(cov[0, 0], 0) * max(chi2, 1.0))
+    return S, eS
+
+
 def _region_weights(sp: ComponentSpectra, component: str) -> np.ndarray:
     mask = sp.agn_mask if component == "agn" else sp.sf_mask
     if mask is not None:
@@ -165,7 +202,8 @@ def _region_weights(sp: ComponentSpectra, component: str) -> np.ndarray:
 def psf_correct(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
                 aperture_spectra: Dict[str, ApertureSpectrum], model: str = "webbpsf", n_wave: int = 6,
                 oversample: int = 4, symmetric: bool = True, fwhm_scale: float = 1.0, psf_sys: float = 0.1,
-                annulus_arcsec=None, verbose: bool = True):
+                annulus_arcsec=None, point_source: str = "aperture", fit_radius_arcsec: Optional[float] = None,
+                verbose: bool = True):
     """PSF-corrected AGN (point source), AGN-outflow and SF spectra, per band (see module docstring).
 
     spectra : the region spectra of Step 5 (``extract_all``); aperture_spectra : ``{band: ApertureSpectrum}`` of the
@@ -175,6 +213,14 @@ def psf_correct(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
         the aperture is then over-corrected by 1/EE). ``(r_in, r_out)`` - the extended emission is assumed to have the
         same mean surface brightness in the aperture as in this annulus around the AGN, and the point source S and the
         extended emission are solved for together: S = (F_ap - a F_ann) / (EE - a f_ann), a = area_ap / area_ann.
+
+    point_source : how the AGN point-source flux S is measured.
+        ``"aperture"`` - from the aperture flux, S = F_ap / EE (optionally with ``annulus_arcsec``): assumes all
+        light in the aperture is the point source.
+        ``"fit"`` - per channel, the spaxels within ``fit_radius_arcsec`` (default max(0.6", 2 FWHM)) are fitted with
+        S x PSF + a smooth extended component (B0 + B1 r): separates the sharp PSF core from extended emission
+        (recommended when the curve of growth shows extended emission around the nucleus). The region errors then
+        neglect the (small) covariance between the fitted S and the region pixels.
 
     Returns ``(result, fractions)``: ``result = {"AGN" | "AGN-outflow" | "SF": {band: ApertureSpectrum}}`` (stitch with
     :func:`breaking_the_blend.stitch_spectra`, component ``"flux"``), and ``fractions = {band: dict(wave, ee, f_agn,
@@ -201,9 +247,10 @@ def psf_correct(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
         w_r = {"AGN-outflow": _region_weights(sp, "agn"), "SF": _region_weights(sp, "sf")}
         lam_s = np.linspace(cube.wave.min(), cube.wave.max(), n_wave)
         z = getattr(cube, "z", 0.0) or 0.0
-        ee, fa, fs, fn = [], [], [], []
+        ee, fa, fs, fn, Ps = [], [], [], [], []
         for lam in lam_s:
             P = psf_on_cube(cube, lam * (1 + z), model, oversample, symmetric=symmetric, fwhm_scale=fwhm_scale)
+            Ps.append(P)
             ee.append(float((P * w_ap).sum())); fa.append(float((P * w_r["AGN-outflow"]).sum()))
             fs.append(float((P * w_r["SF"]).sum())); fn.append(float((P * w_ann).sum()))
         ee, fa, fs, fn = map(np.array, (ee, fa, fs, fn))
@@ -219,13 +266,19 @@ def psf_correct(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
         e2 = np.asarray(cube.err, float) ** 2 if have_err else None
         F_ap = _sum_with_gaps(data, w_ap)
         F_ann = _sum_with_gaps(data, w_ann) if annulus_arcsec is not None else np.zeros_like(F_ap)
-        S = alpha * F_ap - beta * F_ann
         q = lambda wa, wb: np.einsum("lij,ij->l", e2, wa * wb)            # sum sigma^2 wa wb
-        if have_err:
-            vS = alpha ** 2 * q(w_ap, w_ap) + beta ** 2 * q(w_ann, w_ann) - 2 * alpha * beta * q(w_ap, w_ann)
-            eS = np.sqrt(np.clip(vS, 0, None))
+        if point_source == "fit":
+            r_fit = fit_radius_arcsec or max(0.6, 2 * float(psf_fwhm_arcsec(cube.wave.max() * (1 + z))) * fwhm_scale)
+            S, eS = _fit_point_source(cube, lam_s, Ps, r_fit)
+        elif point_source == "aperture":
+            S = alpha * F_ap - beta * F_ann
+            if have_err:
+                vS = alpha ** 2 * q(w_ap, w_ap) + beta ** 2 * q(w_ann, w_ann) - 2 * alpha * beta * q(w_ap, w_ann)
+                eS = np.sqrt(np.clip(vS, 0, None))
+            else:
+                eS = empirical_errors(S)
         else:
-            eS = empirical_errors(S)
+            raise ValueError("point_source must be 'aperture' or 'fit'")
         e_agn = np.hypot(eS, psf_sys * np.abs(S - F_ap))
         result["AGN"][band] = ApertureSpectrum("AGN", band, cube.wave.copy(), S, e_agn, w_ap, ap.center_xy,
                                                ap.radius_arcsec, cube.pixel_scale, ap.covered_frac, "psf")
@@ -235,6 +288,12 @@ def psf_correct(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
                 continue
             c1, c2 = FR[name] * alpha, FR[name] * beta
             F = _sum_with_gaps(data, w) - FR[name] * S
+            if point_source == "fit":
+                eR = np.sqrt(q(w, w)) if have_err else empirical_errors(F)
+                e = np.hypot(np.hypot(eR, FR[name] * eS), psf_sys * np.abs(FR[name] * S))
+                result[name][band] = ApertureSpectrum(name, band, cube.wave.copy(), F, e, w, ap.center_xy,
+                                                      ap.radius_arcsec, cube.pixel_scale, 1.0, "psf")
+                continue
             if have_err:
                 var = (q(w, w) + c1 ** 2 * q(w_ap, w_ap) + c2 ** 2 * q(w_ann, w_ann) - 2 * c1 * q(w, w_ap)
                        + 2 * c2 * q(w, w_ann) - 2 * c1 * c2 * q(w_ap, w_ann))
@@ -283,7 +342,9 @@ def psf_contamination(cubes: Dict[str, Cube], psf_result, lam_rest: float, model
     sel = np.abs(cube.wave - lam_rest) <= half_width
     agn = psf_result["AGN"][band]
     S = float(np.nanmedian(agn.flux[sel]))
-    data = np.nanmedian(np.where(np.asarray(cube.data[sel]) != 0, np.asarray(cube.data[sel], float), np.nan), axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        data = np.nanmedian(np.where(np.asarray(cube.data[sel]) != 0, np.asarray(cube.data[sel], float), np.nan), axis=0)
     with np.errstate(invalid="ignore", divide="ignore"):
         contam = np.where(data > 0, 100.0 * S * P / data, np.nan)
     return dict(band=band, lam=lam_rest, psf_pct=100.0 * P, contam_pct=contam, agn_flux=S, data=data,
