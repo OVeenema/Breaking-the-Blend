@@ -212,7 +212,8 @@ the disc / redshifted cone). `inc_out` is the angle between the bicone axis and 
   nuclear aperture as the AGN point source and uses STPSF/WebbPSF (or a Gaussian) PSFs to give the aperture-corrected
   **AGN** spectrum, the **AGN-outflow** spectrum (AGN-dominated region with the point source removed) and the **SF**
   spectrum (SF-dominated region with the AGN's PSF wings removed), with exact error propagation. Notebooks 01 and 02,
-  Section 9. The instrument PSF model needs `pip install stpsf` and its data files (https://stpsf.readthedocs.io).
+  Section 9, with PSF-contamination maps and curve-of-growth checks. STPSF is installed with the environment; its
+  data files (~90 MB) download automatically to `~/data/stpsf-data` on first use (needs internet once).
 * **Exported map**: `results/<name>/stacked_fraction_map.fits` holds the AGN outflow fraction (primary), the disc
   fraction (`F_DISC`) and `N_LINES`, the number of lines contributing to each pixel.
 

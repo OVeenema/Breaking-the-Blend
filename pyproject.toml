@@ -13,7 +13,7 @@ dependencies = ["numpy>=1.22", "scipy>=1.8", "matplotlib>=3.5", "astropy>=5.0", 
 
 [project.optional-dependencies]
 psf = ["stpsf"]
-extras = ["tqdm", "cmasher", "capfit", "astroquery", "jupyterlab", "ipykernel"]
+extras = ["tqdm", "cmasher", "capfit", "astroquery", "jupyterlab", "ipykernel", "stpsf"]
 test = ["pytest"]
 
 [tool.setuptools]

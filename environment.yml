@@ -21,4 +21,5 @@ dependencies:
   - pip
   - pip:
       - capfit        # optional: CapFit fitter used in the original NGC 5728 analysis
+      - stpsf         # JWST PSF models for the PSF correction (data files, ~90 MB, download automatically on first use)
       - -e .          # this package, editable: changes to the .py files are used immediately

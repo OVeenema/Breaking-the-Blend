@@ -755,3 +755,58 @@ def plot_psf_fractions(fractions: Dict, ax=None):
     ax.set_ylabel("Fraction of the AGN point-source flux")
     ax.legend(fontsize=10)
     return ax.figure
+
+
+def plot_psf_contamination(maps, spectra=None, aperture_spectra=None, lim_arcsec: Optional[float] = None):
+    """For each wavelength (column): top, % of the AGN point-source flux falling in each spaxel (the PSF model);
+    bottom, % of each spaxel's observed flux that is AGN PSF light. Contours: AGN-dominated (blue) and SF-dominated
+    (red) regions; circle: the nuclear aperture. Native spaxel grids, axes in arcsec from the AGN (east left)."""
+    from matplotlib.colors import LogNorm
+    from matplotlib.patches import Circle
+    maps = [m for m in maps if m is not None]
+    fig, axes = plt.subplots(2, len(maps), figsize=(4.3 * len(maps), 8.2), squeeze=False, constrained_layout=True)
+    for j, m in enumerate(maps):
+        ny, nx = m["psf_pct"].shape
+        x0, y0 = m["agn_xy"]; pix = m["pixel_scale"]
+        ext = [(x0 + 0.5) * pix, -(nx - 0.5 - x0) * pix, -(y0 + 0.5) * pix, (ny - 0.5 - y0) * pix]
+        for i, (img, norm, lab) in enumerate((
+                (m["psf_pct"], LogNorm(1e-4, 30), "% of AGN point-source flux"),
+                (m["contam_pct"], LogNorm(0.01, 100), "% of spaxel flux from the AGN PSF"))):
+            ax = axes[i, j]
+            style_axes(ax)
+            shown = np.where(np.isfinite(m["data"]), np.clip(np.nan_to_num(img), norm.vmin, None), np.nan)
+            im = ax.imshow(shown, origin="lower", extent=ext, cmap="magma", norm=norm, interpolation="nearest")
+            sp = spectra.get(m["band"]) if spectra else None
+            if sp is not None:
+                for mask, col in ((sp.agn_mask, "deepskyblue"), (sp.sf_mask, "red")):
+                    if mask is not None and mask.any():
+                        ax.contour(mask.astype(float), levels=[0.5], colors=col, linewidths=1.3, extent=ext,
+                                   origin="lower")
+            ap = aperture_spectra.get(m["band"]) if aperture_spectra else None
+            if ap is not None:
+                ax.add_patch(Circle((0, 0), ap.radius_arcsec, fill=False, ec="w", lw=1.4))
+            if lim_arcsec:
+                ax.set_xlim(lim_arcsec, -lim_arcsec); ax.set_ylim(-lim_arcsec, lim_arcsec)
+            ax.set_xlabel(r"$\Delta$RA [arcsec]")
+            if j == 0:
+                ax.set_ylabel(r"$\Delta$Dec [arcsec]")
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.03, label=lab if j == len(maps) - 1 else None)
+            if i == 0:
+                ax.set_title(f"{m['lam']:g} $\\mu$m ({m['band']})\nAGN = {1e3 * m['agn_flux']:.1f} mJy", fontsize=12)
+    return fig
+
+
+def plot_growth_curves(curves, ax=None):
+    """Observed vs model-PSF curves of growth around the AGN (normalised at the smallest radius)."""
+    curves = [c for c in curves if c is not None]
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7, 5), constrained_layout=True)
+    style_axes(ax)
+    cols = plt.get_cmap("viridis")(np.linspace(0, 0.9, max(len(curves), 1)))
+    for c, col in zip(curves, cols):
+        ax.plot(c["radii"], c["data"], "o-", color=col, lw=1.6, label=f"{c['lam']:g} $\\mu$m data")
+        ax.plot(c["radii"], c["psf"], "--", color=col, lw=1.4, label=f"{c['lam']:g} $\\mu$m PSF")
+    ax.set_xlabel("Aperture radius [arcsec]")
+    ax.set_ylabel("Flux / flux(smallest radius)")
+    ax.legend(fontsize=8, ncol=2)
+    return ax.figure

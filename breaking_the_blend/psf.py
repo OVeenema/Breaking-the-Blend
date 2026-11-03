@@ -34,6 +34,7 @@ avoids having to match the PSF orientation to the cube (sky-aligned cubes are ro
 from __future__ import annotations
 
 import warnings
+from functools import lru_cache
 from typing import Dict, Optional
 
 import numpy as np
@@ -72,6 +73,14 @@ def _gaussian_image(fwhm_arcsec, pixscale_o, n):
 
 
 def _webbpsf_image(cube_name, lam_obs_um, pixscale_o, n, oversample):
+    return _webbpsf_image_cached(cube_name, round(float(lam_obs_um), 4), round(float(pixscale_o), 6), int(n),
+                                 int(oversample))
+
+
+@lru_cache(maxsize=256)
+def _webbpsf_image_cached(cube_name, lam_obs_um, pixscale_o, n, oversample):
+    """STPSF monochromatic IFU PSF (cached: each band/wavelength is computed once per session). STPSF downloads
+    its data files (~90 MB) to ~/data/stpsf-data on first use unless STPSF_PATH points elsewhere."""
     pkg = _psf_package()
     if pkg is None:
         raise ImportError("PSF model 'webbpsf' needs the stpsf (formerly webbpsf) package and its data files - "
@@ -242,3 +251,67 @@ def psf_correct(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
     if verbose and model == "gaussian":
         print("(Gaussian PSF model - use model='webbpsf' with STPSF installed for the instrument PSF)")
     return result, fractions
+
+
+# ----------------------------------------------------------------------
+# Checks: contamination maps and curves of growth
+# ----------------------------------------------------------------------
+def _pick_cube(cubes, lam_rest):
+    """Cube covering lam_rest [rest um] with the wavelength furthest from its band edges."""
+    best, margin = None, -1.0
+    for name, c in cubes.items():
+        lo, hi = c.wave.min(), c.wave.max()
+        if lo < lam_rest < hi and min(lam_rest - lo, hi - lam_rest) > margin:
+            best, margin = name, min(lam_rest - lo, hi - lam_rest)
+    return best
+
+
+def psf_contamination(cubes: Dict[str, Cube], psf_result, lam_rest: float, model: str = "webbpsf",
+                      oversample: int = 4, symmetric: bool = True, fwhm_scale: float = 1.0, half_width: float = 0.05):
+    """Spaxel maps of the AGN point source at one rest wavelength, on the native grid of the cube covering it.
+
+    Returns dict(band, lam, psf_pct = % of the AGN point-source flux in each spaxel, contam_pct = % of each spaxel's
+    observed flux that is AGN PSF light (point-source flux x PSF / data), agn_flux = point-source flux [Jy],
+    data = observed flux map [Jy / spaxel]); the fluxes are medians over +/- half_width um (lines included, so pick
+    continuum wavelengths)."""
+    band = _pick_cube(cubes, lam_rest)
+    if band is None or band not in psf_result["AGN"]:
+        return None
+    cube = cubes[band]
+    z = getattr(cube, "z", 0.0) or 0.0
+    P = psf_on_cube(cube, lam_rest * (1 + z), model, oversample, symmetric=symmetric, fwhm_scale=fwhm_scale)
+    sel = np.abs(cube.wave - lam_rest) <= half_width
+    agn = psf_result["AGN"][band]
+    S = float(np.nanmedian(agn.flux[sel]))
+    data = np.nanmedian(np.where(np.asarray(cube.data[sel]) != 0, np.asarray(cube.data[sel], float), np.nan), axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        contam = np.where(data > 0, 100.0 * S * P / data, np.nan)
+    return dict(band=band, lam=lam_rest, psf_pct=100.0 * P, contam_pct=contam, agn_flux=S, data=data,
+                agn_xy=cube.agn_xy, pixel_scale=cube.pixel_scale)
+
+
+def growth_curve(cubes: Dict[str, Cube], lam_rest: float, radii_arcsec=None, model: str = "webbpsf",
+                 oversample: int = 4, symmetric: bool = True, fwhm_scale: float = 1.0, half_width: float = 0.05):
+    """Curve of growth of the observed continuum around the AGN vs that of the model PSF, at one wavelength.
+
+    Both are normalised at the first radius. If the data grow faster than the PSF, there is extended emission
+    around the nucleus: the point-source correction then over-estimates the AGN (and over-subtracts the regions).
+    Returns dict(band, radii, data, psf) or None."""
+    from .extraction import aperture_weights, cube_footprint
+    band = _pick_cube(cubes, lam_rest)
+    if band is None:
+        return None
+    cube = cubes[band]
+    radii = np.asarray(radii_arcsec if radii_arcsec is not None else [0.3, 0.45, 0.6, 0.8, 1.0, 1.25, 1.5], float)
+    z = getattr(cube, "z", 0.0) or 0.0
+    P = psf_on_cube(cube, lam_rest * (1 + z), model, oversample, symmetric=symmetric, fwhm_scale=fwhm_scale)
+    sel = np.abs(cube.wave - lam_rest) <= half_width
+    img = np.nanmedian(np.asarray(cube.data[sel], float), axis=0)
+    foot = cube_footprint(cube)
+    x0, y0 = cube.agn_xy
+    d, m = [], []
+    for r in radii:
+        w = aperture_weights(cube.shape2d, x0, y0, r / cube.pixel_scale) * foot
+        d.append(np.nansum(w * img)); m.append(np.sum(w * P))
+    d, m = np.array(d), np.array(m)
+    return dict(band=band, lam=lam_rest, radii=radii, data=d / d[0], psf=m / m[0])
