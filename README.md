@@ -211,7 +211,9 @@ the disc / redshifted cone). `inc_out` is the angle between the bicone axis and 
 * **PSF correction**: `btb.psf_correct(cubes, spectra, aperture_spectra["nuclear"], model="webbpsf")` treats the
   nuclear aperture as the AGN point source and uses STPSF/WebbPSF (or a Gaussian) PSFs to give the aperture-corrected
   **AGN** spectrum, the **AGN-outflow** spectrum (AGN-dominated region with the point source removed) and the **SF**
-  spectrum (SF-dominated region with the AGN's PSF wings removed), with exact error propagation. Notebooks 01 and 02,
+  spectrum (SF-dominated region with the AGN's PSF wings removed). By default only the smooth AGN continuum is
+  subtracted from the regions (lines, PAH and H2 stay), the files carry random errors and the PSF-model systematic in
+  separate columns, and bands needing large rescaling are dropped. Notebooks 01 and 02,
   Section 9, with PSF-contamination maps and curve-of-growth checks. STPSF is installed with the environment; its
   data files (~90 MB) download automatically to `~/data/stpsf-data` on first use (needs internet once).
 * **Exported map**: `results/<name>/stacked_fraction_map.fits` holds the AGN outflow fraction (primary), the disc

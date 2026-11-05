@@ -186,8 +186,37 @@ def _fit_point_source(cube, lam_s, Ps, r_fit):
         coef, *_ = np.linalg.lstsq(Aw, yw, rcond=None)
         cov = np.linalg.pinv(Aw.T @ Aw)
         chi2 = np.sum((Aw @ coef - yw) ** 2) / max(ok.sum() - 3, 1)
-        S[l], eS[l] = coef[0], np.sqrt(max(cov[0, 0], 0) * max(chi2, 1.0))
+        S[l], eS[l] = coef[0], np.sqrt(max(cov[0, 0], 0))     # noise only (model mismatch is a systematic)
     return S, eS
+
+
+def smooth_point_source(wave, S, eS=None, order: int = 3, z: float = 0.0, line_kms: float = 1200.0, n_iter: int = 6):
+    """Robust smooth continuum of a per-channel point-source spectrum in one band: a polynomial of ``order`` in
+    wavelength, fitted after masking +/- line_kms around the catalogue lines and iteratively clipping positive (> 2
+    sigma; emission features such as PAH bands) and negative (> 3 sigma) outliers. Returns (S_c, err_S_c)."""
+    from .lines import LINE_CATALOGUE
+    w = np.asarray(wave, float); y = np.asarray(S, float)
+    ok = np.isfinite(y)
+    for l in LINE_CATALOGUE.values():
+        ok &= np.abs(w - l.wave) / l.wave * 299792.458 > line_kms
+    for lam in (5.511, 6.909, 8.025, 9.665, 12.279, 17.035, 28.219,      # H2 0-0 S(7)..S(0)
+                4.0523, 4.6538, 7.4599, 12.3719, 3.7406):                 # H I Br a, Pf b, Pf a, Hu a, Pf g
+        ok &= np.abs(w - lam) / lam * 299792.458 > line_kms
+    if ok.sum() < order + 5:
+        return np.full_like(y, np.nanmedian(y)), np.full_like(y, np.nan)
+    x = (w - w.mean()) / max(np.ptp(w), 1e-6)
+    use = ok.copy()
+    for _ in range(n_iter):
+        c = np.polyfit(x[use], y[use], order)
+        r = y - np.polyval(c, x)
+        sig = 1.4826 * np.nanmedian(np.abs(r[use] - np.nanmedian(r[use])))
+        new = ok & (r < 2 * sig) & (r > -3 * sig)
+        if new.sum() < order + 5 or np.array_equal(new, use):
+            break
+        use = new
+    c, cov = np.polyfit(x[use], y[use], order, cov=True)
+    V = np.vstack([x ** k for k in range(order, -1, -1)]).T
+    return np.polyval(c, x), np.sqrt(np.clip(np.einsum("ij,jk,ik->i", V, cov, V), 0, None))
 
 
 def _region_weights(sp: ComponentSpectra, component: str) -> np.ndarray:
@@ -203,7 +232,7 @@ def psf_correct(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
                 aperture_spectra: Dict[str, ApertureSpectrum], model: str = "webbpsf", n_wave: int = 6,
                 oversample: int = 4, symmetric: bool = True, fwhm_scale: float = 1.0, psf_sys: float = 0.1,
                 annulus_arcsec=None, point_source: str = "aperture", fit_radius_arcsec: Optional[float] = None,
-                verbose: bool = True):
+                subtract: str = "continuum", continuum_order: int = 3, verbose: bool = True):
     """PSF-corrected AGN (point source), AGN-outflow and SF spectra, per band (see module docstring).
 
     spectra : the region spectra of Step 5 (``extract_all``); aperture_spectra : ``{band: ApertureSpectrum}`` of the
@@ -222,12 +251,20 @@ def psf_correct(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
         (recommended when the curve of growth shows extended emission around the nucleus). The region errors then
         neglect the (small) covariance between the fitted S and the region pixels.
 
+    subtract : what is removed from the AGN-outflow and SF regions. ``"continuum"`` (default) - only a smooth
+        continuum of the point source (robust polynomial per band, see :func:`smooth_point_source`): the unresolved
+        AGN continuum (hot dust) is removed while all line, PAH and H2 emission stays in the regions, and almost no
+        noise is added. ``"full"`` - the per-channel point-source spectrum, lines included (noisier).
+    Errors: ``flux_err`` holds the random (noise) errors, propagated from the ERR cubes; the PSF-model uncertainty,
+    ``psf_sys`` x (size of each correction), is a smooth systematic and is returned separately as ``flux_sys``
+    (attribute of each spectrum) - do not add it to the per-channel errors used for line fitting.
+
     Returns ``(result, fractions)``: ``result = {"AGN" | "AGN-outflow" | "SF": {band: ApertureSpectrum}}`` (stitch with
     :func:`breaking_the_blend.stitch_spectra`, component ``"flux"``), and ``fractions = {band: dict(wave, ee, f_agn,
     f_sf, f_ann)}`` at the sample wavelengths.
     """
     from .extraction import aperture_weights, cube_footprint
-    result = {"AGN": {}, "AGN-outflow": {}, "SF": {}}
+    result = {"AGN": {}, "AGN-continuum": {}, "AGN-outflow": {}, "SF": {}}
     fractions = {}
     for band, sp in sorted(spectra.items(), key=lambda kv: cubes[kv[0]].wave_range[0] if kv[0] in cubes else 0):
         ap = aperture_spectra.get(band)
@@ -279,20 +316,28 @@ def psf_correct(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
                 eS = empirical_errors(S)
         else:
             raise ValueError("point_source must be 'aperture' or 'fit'")
-        e_agn = np.hypot(eS, psf_sys * np.abs(S - F_ap))
-        result["AGN"][band] = ApertureSpectrum("AGN", band, cube.wave.copy(), S, e_agn, w_ap, ap.center_xy,
-                                               ap.radius_arcsec, cube.pixel_scale, ap.covered_frac, "psf")
+        S_c, eS_c = smooth_point_source(cube.wave, S, eS, order=continuum_order)
+        eS_c = np.where(np.isfinite(eS_c), eS_c, 0.0)
+        for name_, Sx, eSx in (("AGN", S, eS), ("AGN-continuum", S_c, eS_c)):
+            spx = ApertureSpectrum(name_, band, cube.wave.copy(), Sx, eSx, w_ap, ap.center_xy,
+                                   ap.radius_arcsec, cube.pixel_scale, ap.covered_frac, "psf")
+            spx.flux_sys = psf_sys * np.abs(Sx - F_ap)
+            result.setdefault(name_, {})[band] = spx
+        S_sub, eS_sub = (S_c, eS_c) if subtract == "continuum" else (S, eS)
         # regions with the point source removed: F_R - f_R S  ->  weights w_R - f_R alpha w_ap + f_R beta w_ann
         for name, w in w_r.items():
             if w.sum() == 0:
                 continue
             c1, c2 = FR[name] * alpha, FR[name] * beta
-            F = _sum_with_gaps(data, w) - FR[name] * S
-            if point_source == "fit":
-                eR = np.sqrt(q(w, w)) if have_err else empirical_errors(F)
-                e = np.hypot(np.hypot(eR, FR[name] * eS), psf_sys * np.abs(FR[name] * S))
-                result[name][band] = ApertureSpectrum(name, band, cube.wave.copy(), F, e, w, ap.center_xy,
-                                                      ap.radius_arcsec, cube.pixel_scale, 1.0, "psf")
+            F = _sum_with_gaps(data, w) - FR[name] * S_sub
+            if point_source == "fit" or subtract == "continuum":
+                # S_sub is (nearly) noise-free (smooth continuum) or a separate fit: region noise + f_R x its error
+                eR = np.sqrt(q(w, w)) if have_err else empirical_errors(_sum_with_gaps(data, w))
+                e = np.hypot(eR, FR[name] * eS_sub)
+                spx = ApertureSpectrum(name, band, cube.wave.copy(), F, e, w, ap.center_xy,
+                                       ap.radius_arcsec, cube.pixel_scale, 1.0, "psf")
+                spx.flux_sys = psf_sys * np.abs(FR[name] * S_sub)
+                result[name][band] = spx
                 continue
             if have_err:
                 var = (q(w, w) + c1 ** 2 * q(w_ap, w_ap) + c2 ** 2 * q(w_ann, w_ann) - 2 * c1 * q(w, w_ap)
@@ -300,9 +345,10 @@ def psf_correct(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra],
                 e_stat = np.sqrt(np.clip(var, 0, None))
             else:
                 e_stat = empirical_errors(F)
-            e = np.hypot(e_stat, psf_sys * np.abs(FR[name] * S))
-            result[name][band] = ApertureSpectrum(name, band, cube.wave.copy(), F, e, w, ap.center_xy,
-                                                  ap.radius_arcsec, cube.pixel_scale, 1.0, "psf")
+            spx = ApertureSpectrum(name, band, cube.wave.copy(), F, e_stat, w, ap.center_xy,
+                                   ap.radius_arcsec, cube.pixel_scale, 1.0, "psf")
+            spx.flux_sys = psf_sys * np.abs(FR[name] * S)
+            result[name][band] = spx
         if verbose:
             print(f"{band:>14s}: EE(aperture) {ee.min():.2f}-{ee.max():.2f}, leakage into AGN region "
                   f"{100 * fa.min():.1f}-{100 * fa.max():.1f}%, into SF region {100 * fs.min():.2f}-{100 * fs.max():.2f}% "
