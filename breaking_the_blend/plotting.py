@@ -810,3 +810,150 @@ def plot_growth_curves(curves, ax=None):
     ax.set_ylabel("Flux / flux(smallest radius)")
     ax.legend(fontsize=8, ncol=2)
     return ax.figure
+
+
+# ----------------------------------------------------------------------
+# Extinction from the H2 rotation diagram (Section 10)
+# ----------------------------------------------------------------------
+def plot_extinction_law(law="kvt", lines=None, wave_range=(2.5, 28.0), ax=None):
+    """The extinction law tau(lambda)/tau_9.8 with the H2 transitions marked."""
+    from .extinction import extinction_law, get_h2_lines, DEFAULT_H2_LINES
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 4.2), constrained_layout=True)
+    style_axes(ax)
+    w = np.linspace(*wave_range, 1500)
+    ax.plot(w, extinction_law(w, law), color="k")
+    for ln in get_h2_lines(lines or DEFAULT_H2_LINES).values():
+        kk = float(extinction_law(ln.wave, law))
+        ax.plot(ln.wave, kk, "o", color="crimson", ms=6, zorder=3)
+        ax.annotate(ln.label, (ln.wave, kk), xytext=(0, 7), textcoords="offset points", ha="center",
+                    fontsize=11, color="crimson")
+    ax.set_xlabel(r"Rest-frame wavelength [$\mu$m]")
+    ax.set_ylabel(r"$\tau(\lambda)\,/\,\tau_{9.8}$")
+    ax.set_xlim(*wave_range)
+    ax.set_ylim(0, None)
+    return ax.figure
+
+
+def plot_h2_maps(maps: Dict, snr_min: float = 3.0, ncols: int = 4, lim_pc: Optional[float] = None,
+                 size: float = 3.4):
+    """H2 line flux maps (log scale, W m^-2 per pixel); spaxels below ``snr_min`` in grey, S/N = 3 contour."""
+    ms = sorted(maps.values(), key=lambda m: m.line.Eu)
+    fig, axes = _grid(len(ms), ncols, size=size, extra_w=0.6)
+    for ax, m in zip(axes, ms):
+        f = np.where(np.isfinite(m.flux) & (m.flux > 0), m.flux, np.nan)
+        good = np.nan_to_num(m.snr) >= snr_min
+        ext = m.grid.extent_pc
+        ax.imshow(np.where(np.isfinite(m.flux), 1.0, np.nan), extent=ext, cmap="Greys", vmin=0, vmax=4)
+        pos = f[good]
+        norm = LogNorm(*np.nanpercentile(pos, [2, 99.5])) if pos.size > 3 else None
+        im = ax.imshow(np.where(good, f, np.nan), extent=ext, cmap=FLUX_CMAP, norm=norm)
+        if good.any() and (~good).any():
+            ax.contour(np.nan_to_num(m.snr), levels=[snr_min], extent=ext, colors="k", linewidths=0.7)
+        _agn(ax, "k")
+        if lim_pc:
+            ax.set_xlim(-lim_pc, lim_pc); ax.set_ylim(-lim_pc, lim_pc)
+        _panel_text(ax, f"H$_2$ {m.line.label}\n{m.cube_name}")
+        style_colorbar(plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02))
+    fig.supxlabel(r"$\Delta x$ [pc]")
+    fig.supylabel(r"$\Delta y$ [pc]")
+    g = ms[0].grid.name
+    same = all(m.grid.name == g for m in ms)
+    fig.suptitle(r"H$_2$ flux [W m$^{-2}$ pixel$^{-1}$]" + (f" on the {g} grid" if same else " (native grids)")
+                 + (f", PSF matched to FWHM = {ms[0].fwhm_arcsec:.2f}\"" if ms[0].fwhm_arcsec else ""))
+    return fig
+
+
+def plot_excitation_diagrams(tm, spaxels: Sequence[Tuple[int, int]], show_penalty: bool = True,
+                             tau_plot_max: Optional[float] = None, size: float = 3.6):
+    """Rotation diagrams of example spaxels before (black) and after (red) the extinction correction with the
+    best tau_9.8 (red dashed: power law through the corrected transitions other than S(3)), and below, the
+    minimised quantity against tau_9.8 (as Donnan et al. 2024 Fig. 7)."""
+    from .extinction import penalty_curve, powerlaw_fit
+    n = len(spaxels)
+    nrows = 2 if show_penalty else 1
+    fig, axes = plt.subplots(nrows, n, figsize=(size * n, size * nrows * 0.95), squeeze=False,
+                             constrained_layout=True)
+    i3 = list(tm.names).index("S3")
+    lg = np.log10(np.e)
+    x0, y0 = tm.grid.agn_xy
+    s = tm.grid.pixel_scale * tm.grid.pc_per_arcsec
+    for j, (iy, ix) in enumerate(spaxels):
+        ax = axes[0, j]
+        style_axes(ax)
+        y = tm.lnNg[:, iy, ix]
+        e = tm.sig_ln[:, iy, ix]
+        v = np.isfinite(y)
+        t = tm.tau[iy, ix]
+        yc = y + t * tm.k
+        ax.errorbar(tm.Eu[v], lg * y[v], yerr=lg * e[v], fmt="o", color="k", ms=6, capsize=2, label="observed")
+        ax.errorbar(tm.Eu[v], lg * yc[v], yerr=lg * e[v], fmt="s", color="crimson", ms=5, capsize=2, mfc="none",
+                    mew=1.5, label=rf"corrected, $\tau_{{9.8}}$ = {t:.2f}")
+        if v[i3]:
+            ax.annotate("S(3)", (tm.Eu[i3], lg * y[i3]), xytext=(6, -12), textcoords="offset points", fontsize=11)
+        if v.sum() >= 3:
+            b, a = powerlaw_fit(tm, iy, ix, t)
+            xx = np.linspace(tm.Eu[v].min() * 0.9, tm.Eu[v].max() * 1.05, 100)
+            ax.plot(xx, lg * (a + b * np.log(xx)), "--", color="crimson", lw=1.1)
+        ax.set_xlabel(r"$E_{\rm u}/k$ [K]")
+        if j == 0:
+            ax.set_ylabel(r"log$_{10}$ ($N_{\rm u}/g_{\rm u}$ [cm$^{-2}$])")
+        off = f"({(ix - x0) * s:+.0f}, {(iy - y0) * s:+.0f}) pc"
+        ax.set_title(f"#{j + 1}  {off}", fontsize=12)
+        ax.legend(fontsize=9, loc="upper right")
+        if show_penalty:
+            ax2 = axes[1, j]
+            style_axes(ax2)
+            tmax = tau_plot_max or max(3.0, 2.0 * (tm.tau_hi[iy, ix] if np.isfinite(tm.tau_hi[iy, ix]) else t) + 0.5)
+            taus = np.linspace(min(-0.5, t - 1), tmax, 300)
+            ax2.plot(taus, penalty_curve(tm, iy, ix, taus), color="k")
+            ax2.axvline(t, color="crimson", lw=1.5)
+            for b in (tm.tau_lo[iy, ix], tm.tau_hi[iy, ix]):
+                if np.isfinite(b):
+                    ax2.axvline(b, color="crimson", ls="--", lw=1)
+            ax2.set_xlabel(r"$\tau_{9.8}$")
+            if j == 0:
+                ax2.set_ylabel(r"Penalty $P_{\rm H_2}$" if tm.method == "smoothness"
+                               else r"$\chi^2$ of S(3) about the power law")
+    return fig
+
+
+def plot_tau_map(tm, spaxels: Optional[Sequence[Tuple[int, int]]] = None, stack=None,
+                 lim_pc: Optional[float] = None, vmax: Optional[float] = None, levels=(0.2, 0.8)):
+    """tau_9.8 map, its uncertainty and the S/N of S(3); example spaxels numbered, the f_out = 0.2 / 0.8 contours of
+    the stacked map (if ``stack`` is given) separating the SF- and AGN-dominated regions."""
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.9), constrained_layout=True)
+    ext = tm.grid.extent_pc
+    if vmax is None:
+        vmax = float(np.nanpercentile(tm.tau[tm.ok], 98)) if tm.ok.any() else 1.0
+    panels = [(np.where(tm.ok, tm.tau, np.nan), "magma", 0, vmax, r"$\tau_{9.8}$ (H$_2$)"),
+              (tm.tau_err, "viridis", 0, np.nanpercentile(tm.tau_err[tm.ok], 95) if tm.ok.any() else 1,
+               r"$\sigma(\tau_{9.8})$"),
+              (np.nan_to_num(tm.snr_s3, nan=np.nan), "cividis", 0, np.nanpercentile(tm.snr_s3, 98), "S/N of S(3)")]
+    xpc, ypc = tm.grid.offsets_pc()
+    fo = None
+    if stack is not None:
+        fo = stack.sample(xpc, ypc, "f_disc")
+        fo = 1 - fo
+    for ax, (img, cm, lo, hi, lab) in zip(axes, panels):
+        style_axes(ax)
+        ax.imshow(np.where(np.isfinite(tm.snr_s3), 1.0, np.nan), extent=ext, cmap="Greys", vmin=0, vmax=4)
+        im = ax.imshow(img, extent=ext, cmap=cm, vmin=lo, vmax=hi)
+        style_colorbar(plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02), lab)
+        if fo is not None and np.isfinite(fo).any():
+            ax.contour(xpc, ypc, fo, levels=list(levels), colors=["darkorange", "deepskyblue"], linewidths=1.4)
+        _agn(ax, "w" if ax is axes[0] else "k")
+        if spaxels:
+            x0, y0 = tm.grid.agn_xy
+            s = tm.grid.pixel_scale * tm.grid.pc_per_arcsec
+            for j, (iy, ix) in enumerate(spaxels):
+                ax.plot((ix - x0) * s, (iy - y0) * s, "s", mfc="none", mec="cyan", ms=9, mew=1.8)
+                ax.annotate(str(j + 1), ((ix - x0) * s, (iy - y0) * s), xytext=(5, 5), textcoords="offset points",
+                            color="cyan", fontsize=12, fontweight="bold")
+        if lim_pc:
+            ax.set_xlim(-lim_pc, lim_pc); ax.set_ylim(-lim_pc, lim_pc)
+        ax.set_xlabel(r"$\Delta x$ [pc]")
+    axes[0].set_ylabel(r"$\Delta y$ [pc]")
+    axes[0].set_title(f"method: {tm.method}" + (f"; contours: f_out = {levels[0]:g}, {levels[1]:g}" if fo is not None else ""),
+                      fontsize=12)
+    return fig

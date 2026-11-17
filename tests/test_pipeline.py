@@ -230,6 +230,51 @@ def test_models_pa_convention():
     assert btb.disc_velocity(-500.0, 0.0, **p) > 0
 
 
+def _mock_h2_cubes(tau_fn, bands=("ch2-short", "ch2-medium", "ch3-short", "ch3-long")):
+    """Mock MRS cubes with H2 S(1)-S(4) on a power-law excitation diagram, behind a screen tau_fn(x_pc, y_pc)."""
+    from breaking_the_blend import extinction as ex
+    cubes, truth = btb.mock.make_mock_cubes(bands={b: btb.MRS_BANDS[b] for b in bands}, noise=0.01, fov_arcsec=5.0)
+    for name, c in cubes.items():
+        c.agn_xy = truth["agn_xy"][name]
+        x, y = c.offsets_pc()
+        omega = (c.pixel_scale / ex.ARCSEC_PER_RAD) ** 2
+        data = np.array(c.data, float)
+        for ln in ex.get_h2_lines(["S1", "S2", "S3", "S4"]).values():
+            if not (c.wave[0] + 0.03 < ln.wave < c.wave[-1] - 0.03):
+                continue
+            N = 1e18 * (ln.Eu / 1000.0) ** -3.0 * ln.g * 1e4
+            F = N * ln.A * ex.H_PLANCK * ex.C_MS * omega / (4 * np.pi * ln.wave * 1e-6)
+            amp = F / (np.sqrt(2 * np.pi) * 90.0 / btb.C_KMS * ex.C_MS / (ln.wave * 1e-6) * 1e-26)
+            v = btb.C_KMS * (c.wave - ln.wave) / ln.wave
+            data += amp * np.exp(-0.5 * (v[:, None, None] / 90.0) ** 2)
+        c.data = (data * np.exp(-tau_fn(x, y)[None] * ex.extinction_law(c.wave)[:, None, None])).astype(np.float32)
+    return cubes
+
+
+def test_extinction_from_h2():
+    law = btb.extinction_law(np.array([9.8, 9.665, 17.03, 5.5]))
+    assert abs(law[0] - 1) < 1e-9 and 0.95 < law[1] <= 1.0 and law[2] < 0.5 and law[3] < 0.5
+    tau_fn = lambda x, y: 0.5 + 1.0 * np.exp(-0.5 * (x ** 2 + y ** 2) / 400.0 ** 2)
+    cubes = _mock_h2_cubes(tau_fn)
+    maps = btb.h2_line_maps(cubes, ["S1", "S2", "S3", "S4"], target="S1", verbose=False)
+    assert all(m.grid.name == "ch3-long" for m in maps.values())
+    for method in ("powerlaw", "smoothness"):
+        tm = btb.fit_tau(maps, method=method, n_mc=20, verbose=False)
+        x, y = tm.grid.offsets_pc()
+        d = (tm.tau - tau_fn(x, y))[tm.ok]
+        assert tm.ok.sum() > 100
+        assert abs(np.median(d)) < 0.1 and np.std(d) < 0.15, (method, np.median(d), np.std(d))
+    # the tau map on another grid, and the corrected cube recovers the unextincted continuum shape
+    c = cubes["ch2-medium"]
+    t = btb.tau_on_cube(tm, c)
+    assert t.shape == c.shape2d and np.isfinite(t).all()
+    xc, yc = c.offsets_pc()
+    assert np.median(np.abs(t - tau_fn(xc, yc))) < 0.1
+    cc = btb.correct_cube(c, t)
+    assert cc.data.shape == c.data.shape
+    assert np.nanmedian(np.asarray(cc.data) / np.where(c.data != 0, c.data, np.nan)) > 1.5
+
+
 if __name__ == "__main__":
     import tempfile, pathlib
     test_models_pa_convention()
@@ -239,5 +284,6 @@ if __name__ == "__main__":
     test_apertures()
     test_empirical_errors()
     test_psf_correction()
+    test_extinction_from_h2()
     test_full_pipeline(pathlib.Path(tempfile.mkdtemp()))
     print("all tests passed")

@@ -216,6 +216,12 @@ the disc / redshifted cone). `inc_out` is the angle between the bicone axis and 
   separate columns, and bands needing large rescaling are dropped. Notebooks 01 and 02,
   Section 9, with PSF-contamination maps and curve-of-growth checks. STPSF is installed with the environment; its
   data files (~90 MB) download automatically to `~/data/stpsf-data` on first use (needs internet once).
+* **Extinction correction from H2**: `btb.h2_line_maps(cubes, target="S1")` measures H2 S(1)-S(7) PSF-matched on the
+  MRS channel-3 grid, `btb.fit_tau(maps)` finds tau_9.8 in every spaxel from the dip of S(3) (in the 9.8 um silicate
+  feature) in the rotation diagram (Donnan et al. 2024, MNRAS 529, 1386, Fig. 7; power-law or Laplacian-smoothness
+  method, screen extinction with a power law + silicate law), and `btb.extinction_corrected_spectra(cubes, stack, tau_map,
+  ...)` repeats the Step 5 extraction with every spaxel corrected by exp(+tau_9.8 tau(lambda)). Notebooks 01 and 02,
+  Section 10 (tau_9.8 map, example excitation diagrams, corrected AGN- and SF-dominated spectra).
 * **Exported map**: `results/<name>/stacked_fraction_map.fits` holds the AGN outflow fraction (primary), the disc
   fraction (`F_DISC`) and `N_LINES`, the number of lines contributing to each pixel.
 
@@ -235,6 +241,7 @@ breaking_the_blend/
   stacking.py    Step 4   weighted multi-line map, robustness checks, dominated fractions
   extraction.py  Step 5   component and aperture spectra with errors, stitching, continuum split
   psf.py         PSF correction of the AGN point source in the extracted spectra (STPSF / Gaussian PSFs)
+  extinction.py  spaxel-by-spaxel tau_9.8 from the H2 rotation diagram, extinction-corrected spectra
   external.py    optional imported velocity / dispersion maps (3DBarolo, MOKA3D, ...)
   plotting.py    one function per figure of the paper
   mock.py        synthetic ring + bicone cubes in the real MIRI/MRS bands, with known truth
