@@ -422,3 +422,101 @@ def growth_curve(cubes: Dict[str, Cube], lam_rest: float, radii_arcsec=None, mod
         d.append(np.nansum(w * img)); m.append(np.sum(w * P))
     d, m = np.array(d), np.array(m)
     return dict(band=band, lam=lam_rest, radii=radii, data=d / d[0], psf=m / m[0])
+
+
+# ----------------------------------------------------------------------
+# Per-spaxel extinction + PSF correction of the region spectra, band by band
+# ----------------------------------------------------------------------
+def corrected_region_spectra(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra], psf_result,
+                             tau_maps: Optional[Dict[str, np.ndarray]] = None, law="donnan2023",
+                             model: str = "webbpsf", n_wave: int = 6, oversample: int = 4, symmetric: bool = True,
+                             fwhm_scale: float = 1.0, subtract: str = "continuum", psf_sys: float = 0.1,
+                             verbose: bool = True):
+    """AGN- and SF-dominated spectra corrected spaxel by spaxel for the leaked AGN PSF and for extinction, per band
+    (not stitched).
+
+    For every band and region R (the Step 5 spaxels, weights w_i) the corrected spectrum is
+
+        F_R(lambda) = sum_i w_i [D_i(lambda) - P_i(lambda) S(lambda)] exp(+tau_i tau(lambda))
+
+    with D_i the observed spectrum of spaxel i, P_i(lambda) the fraction of the AGN point source that the PSF model puts
+    in spaxel i (at the band's AGN position, interpolated between ``n_wave`` sample wavelengths), S the AGN point-source
+    spectrum of this band (``psf_result`` from :func:`psf_correct`: its smooth continuum with ``subtract="continuum"``,
+    the per-channel spectrum with ``"full"``) and tau_i the spaxel's tau_9.8 (``tau_maps[band]``, e.g. from
+    :func:`breaking_the_blend.tau_on_cube`). The PSF leakage is removed *before* the extinction correction: the leaked
+    light is the AGN's, not behind the spaxel's screen.
+
+    Returns ``{name: {band: ApertureSpectrum}}`` with, for R in ``AGN`` and ``SF``: ``R-raw`` (observed), ``R-ext``
+    (extinction only), ``R-psf`` (PSF only) and ``R-corr`` (both). Errors: ``flux_err`` = random (ERR cube, scaled by the
+    correction, plus the point-source error x leaked fraction); ``flux_sys`` = ``psf_sys`` x the subtracted PSF light.
+    """
+    from .extinction import extinction_law
+    src_key = "AGN-continuum" if subtract == "continuum" else "AGN"
+    if subtract not in ("continuum", "full"):
+        raise ValueError("subtract must be 'continuum' or 'full'")
+    out = {f"{R}-{v}": {} for R in ("AGN", "SF") for v in ("raw", "ext", "psf", "corr")}
+    for band, sp in sorted(spectra.items(), key=lambda kv: cubes[kv[0]].wave_range[0] if kv[0] in cubes else 0):
+        cube = cubes.get(band)
+        if cube is None:
+            continue
+        src = psf_result.get(src_key, {}).get(band)
+        wave = cube.wave
+        nl = wave.size
+        data = np.asarray(cube.data, float)
+        e2 = np.asarray(cube.err, float) ** 2 if cube.err is not None else None
+        z = getattr(cube, "z", 0.0) or 0.0
+        lam_s = np.linspace(wave.min(), wave.max(), n_wave)
+        Ps = np.array([psf_on_cube(cube, lam * (1 + z), model, oversample, symmetric=symmetric, fwhm_scale=fwhm_scale)
+                       for lam in lam_s]) if src is not None else None
+        fidx = np.interp(wave, lam_s, np.arange(n_wave))
+        i0 = np.minimum(np.floor(fidx).astype(int), n_wave - 1)
+        i1 = np.minimum(i0 + 1, n_wave - 1)
+        t = fidx - i0
+        E = None
+        if tau_maps is not None and band in tau_maps:
+            k = extinction_law(wave, law)
+            E = np.exp(np.asarray(tau_maps[band], float)[None] * k[:, None, None])
+        S = eS = None
+        if src is not None:
+            S = np.asarray(src.flux, float)
+            eS = np.asarray(src.flux_err, float) if src.flux_err is not None else np.zeros(nl)
+            eS = np.where(np.isfinite(eS), eS, 0.0)
+        msg = []
+        for R, comp in (("AGN", "agn"), ("SF", "sf")):
+            w = _region_weights(sp, comp)
+            if w.sum() == 0 or not np.isfinite(getattr(sp, comp)).any():
+                continue
+            raw = _sum_with_gaps(data, w)
+            ext = _sum_with_gaps(data * E, w) if E is not None else raw
+            if e2 is not None:
+                e_raw = np.sqrt(np.einsum("lij,ij->l", e2, w ** 2))
+                e_ext = np.sqrt(np.einsum("lij,ij->l", e2 * E ** 2, w ** 2)) if E is not None else e_raw
+            else:
+                e_raw, e_ext = empirical_errors(raw), empirical_errors(ext)
+            versions = {"raw": (raw, e_raw, np.zeros(nl)), "ext": (ext, e_ext, np.zeros(nl))}
+            if S is not None:
+                FR_s = np.einsum("sij,ij->s", Ps, w)                               # leaked fraction (observed)
+                FR = (1 - t) * FR_s[i0] + t * FR_s[i1]
+                if E is not None:
+                    G_s = np.einsum("sij,lij->sl", Ps * w[None], E)               # leaked fraction x exp(tau k)
+                    G = (1 - t) * G_s[i0, np.arange(nl)] + t * G_s[i1, np.arange(nl)]
+                else:
+                    G = FR
+                versions["psf"] = (raw - FR * S, np.hypot(e_raw, FR * eS), psf_sys * np.abs(FR * S))
+                versions["corr"] = (ext - G * S, np.hypot(e_ext, G * eS), psf_sys * np.abs(G * S))
+                msg.append(f"{R}: PSF leak {100 * np.nanmin(FR):.1f}-{100 * np.nanmax(FR):.1f}% of S")
+            for v, (f, e, s_) in versions.items():
+                e = np.where(np.isfinite(f), e, np.nan)
+                spx = ApertureSpectrum(f"{R}-{v}", band, wave.copy(), f, e, w, tuple(cube.agn_xy), 0.0,
+                                       cube.pixel_scale, 1.0, "corrected")
+                spx.flux_sys = s_
+                out[f"{R}-{v}"][band] = spx
+        if verbose:
+            med = ""
+            if tau_maps is not None and band in tau_maps:
+                tm = np.asarray(tau_maps[band])
+                med = "; median tau_9.8 " + ", ".join(
+                    f"{R} {np.median(tm[m]):.2f}" for R, m in (("AGN", sp.agn_mask), ("SF", sp.sf_mask))
+                    if m is not None and m.any())
+            print(f"{band:>14s}: " + "; ".join(msg) + med + ("" if S is not None else "  (no AGN point source: PSF step skipped)"))
+    return out

@@ -815,7 +815,7 @@ def plot_growth_curves(curves, ax=None):
 # ----------------------------------------------------------------------
 # Extinction from the H2 rotation diagram (Section 10)
 # ----------------------------------------------------------------------
-def plot_extinction_law(law="kvt", lines=None, wave_range=(2.5, 28.0), ax=None):
+def plot_extinction_law(law="donnan2023", lines=None, wave_range=(2.5, 28.0), ax=None):
     """The extinction law tau(lambda)/tau_9.8 with the H2 transitions marked."""
     from .extinction import extinction_law, get_h2_lines, DEFAULT_H2_LINES
     if ax is None:

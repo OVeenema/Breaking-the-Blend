@@ -32,12 +32,12 @@ Steps (functions)
 
 Extinction law
 --------------
-Donnan et al. (2024) use the law of Donnan et al. (2023a): a power law plus the 9.8 and 18 um silicate
-absorption (including crystalline features). It is not tabulated in the paper, so the default here is the
-standard power law + silicate law of PAHFIT (Smith et al. 2007): the Kemper, Vriend & Tielens (2004)
-9.7 um profile with an 18 um Drude extension, mixed with a lambda^-1.7 power law,
-tau(lambda) = (1 - beta) S_KVT(lambda) + beta (9.7/lambda)^1.7 with beta = 0.1, normalised to 1 at 9.8 um.
-Any other law can be passed as a ``(wave, tau)`` table or a function of wavelength.
+Default (``law="donnan2023"``): the law of Donnan et al. (2023a, appendix A), used by Donnan et al. (2024):
+tau(lambda) = 0.1 (9.8/lambda)^1.7 + 0.9 tau_Sil(lambda), with tau_Sil the empirical silicate profile (9.8 and 18 um,
+including crystalline features) of IRAS 08572+3915, normalised to 1 at 9.8 um. The table is bundled
+(``data/D23ExtCurve.txt``, from Donnan's SPIRIT code, BSD-3 licence). ``law="kvt"`` is the PAHFIT power law + silicate
+law (Smith et al. 2007; Kemper, Vriend & Tielens 2004 profile, (1 - 0.1) S_KVT + 0.1 (9.7/lambda)^1.7). Any other law
+can be passed as a ``(wave, tau)`` table or a function of wavelength.
 
 Caveat: the correction assumes the whole spectrum of a spaxel (continuum, PAHs, ionised lines) is behind
 the same screen as the warm H2. Donnan et al. find different components see different extinction, so the
@@ -46,6 +46,7 @@ corrected spectra show the effect of the H2 extinction, not necessarily the intr
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -140,11 +141,22 @@ def _kvt_profile(lam):
 LawType = Union[str, Callable, Tuple[np.ndarray, np.ndarray]]
 
 
-def extinction_law(lam, law: LawType = "kvt", beta: float = 0.1) -> np.ndarray:
+@lru_cache(maxsize=1)
+def _d23_table():
+    """Donnan et al. (2023a) extinction curve (bundled, 1-40 um; negative values beyond 28 um clipped to 0)."""
+    import os
+    path = os.path.join(os.path.dirname(__file__), "data", "D23ExtCurve.txt")
+    w, t = np.loadtxt(path, unpack=True)
+    return w, np.clip(t, 0.0, None)
+
+
+def extinction_law(lam, law: LawType = "donnan2023", beta: float = 0.1) -> np.ndarray:
     """tau(lambda) / tau_9.8: the extinction law normalised to 1 at 9.8 um (rest-frame um).
 
-    law : ``"kvt"`` (default; PAHFIT / Smith et al. 2007: (1 - beta) KVT silicate profile + beta (9.7/lambda)^1.7,
-        with silicate absorption at 9.8 and 18 um), ``"powerlaw"`` ((9.8/lambda)^1.7 only - no silicate feature,
+    law : ``"donnan2023"`` (default; Donnan et al. 2023a, as used by Donnan et al. 2024: 0.1 (9.8/lambda)^1.7 +
+        0.9 tau_Sil, with the empirical silicate profile of IRAS 08572+3915 incl. crystalline features; bundled table,
+        1-40 um, flat beyond), ``"kvt"`` (PAHFIT / Smith et al. 2007: (1 - beta) KVT silicate profile + beta
+        (9.7/lambda)^1.7, with silicate absorption at 9.8 and 18 um), ``"powerlaw"`` ((9.8/lambda)^1.7 only - no silicate feature,
         for tests), a ``(wave, tau)`` table (interpolated; e.g. the Donnan et al. 2023a law if you have it) or a
         function ``tau(lambda)``. Every law is renormalised to 1 at 9.8 um.
     """
@@ -158,16 +170,19 @@ def extinction_law(lam, law: LawType = "kvt", beta: float = 0.1) -> np.ndarray:
             w, t = np.asarray(law[0], float), np.asarray(law[1], float)
             o = np.argsort(w)
             return np.interp(x, w[o], t[o])
+        if law in ("donnan2023", "D23"):
+            w, t = _d23_table()
+            return np.interp(x, w, t)
         if law == "kvt":
             return (1 - beta) * _kvt_profile(x) + beta * (9.7 / x) ** 1.7
         if law == "powerlaw":
             return (9.8 / x) ** 1.7
-        raise ValueError("law must be 'kvt', 'powerlaw', a (wave, tau) table or a function")
+        raise ValueError("law must be 'donnan2023', 'kvt', 'powerlaw', a (wave, tau) table or a function")
 
     return raw(lam) / float(raw(np.array([9.8]))[0])
 
 
-def extinction_factor(lam, tau98, law: LawType = "kvt") -> np.ndarray:
+def extinction_factor(lam, tau98, law: LawType = "donnan2023") -> np.ndarray:
     """Correction factor F_int / F_obs = exp(+tau_9.8 tau(lambda)) of a foreground screen."""
     return np.exp(np.asarray(tau98, float) * extinction_law(lam, law))
 
@@ -665,7 +680,7 @@ def _tau_smooth(Y, V, k, i3):
     return out
 
 
-def fit_tau(maps: Dict[str, LineFluxMap], method: str = "powerlaw", law: LawType = "kvt", snr_min: float = 3.0,
+def fit_tau(maps: Dict[str, LineFluxMap], method: str = "powerlaw", law: LawType = "donnan2023", snr_min: float = 3.0,
             sys_frac: float = 0.05, n_mc: int = 200, tau_range: Tuple[float, float] = (-1.0, 15.0),
             fit_lines: Optional[Sequence[str]] = None, seed: int = 0, verbose: bool = True) -> TauMap:
     """tau_9.8 in every spaxel from the H2 rotation diagram (maps from :func:`h2_line_maps` with a common ``target``).
@@ -832,7 +847,7 @@ def tau_on_cube(tm: TauMap, cube: Cube, fill: Union[str, float] = "nearest", cli
     return regrid(t, tm.grid, Grid.of(cube), kind="mean", oversample=oversample, outside="nearest")
 
 
-def correct_cube(cube: Cube, tau_map: np.ndarray, law: LawType = "kvt") -> Cube:
+def correct_cube(cube: Cube, tau_map: np.ndarray, law: LawType = "donnan2023") -> Cube:
     """A copy of ``cube`` with every spaxel multiplied by exp(+tau_9.8(x, y) tau(lambda)) (errors too)."""
     k = extinction_law(cube.wave, law)
     fac = np.exp(np.asarray(tau_map, float)[None] * k[:, None, None]).astype(np.float32)

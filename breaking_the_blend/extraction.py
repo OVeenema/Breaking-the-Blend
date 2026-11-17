@@ -571,3 +571,97 @@ def subtract_aperture(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectr
             print(f"{band:>14s}: {100 * frac_in:5.1f}% of the aperture lies in the {component} region"
                   + ("" if frac_in > 0.99 else "  (only that part is removed)"))
     return out
+
+
+def _band_scales(segs: Dict[str, tuple], order, min_overlap_points: int = 5):
+    """Scale factors that join the bands one after the other in ``order`` (the first one fixed at 1): each band is scaled
+    so that its median flux in the overlap with the previous (already scaled) band equals that band's median there.
+    Medians of the fluxes (not of per-channel ratios) keep this robust for faint or partly negative spectra.
+    Returns {band: factor} and {band: note}."""
+    scales, notes = {order[0]: 1.0}, {}
+    for prev, cur in zip(order[:-1], order[1:]):
+        wp, fp = segs[prev]
+        wc, fc = segs[cur]
+        lo, hi = max(wp.min(), wc.min()), min(wp.max(), wc.max())
+        sel = (wc >= lo) & (wc <= hi)
+        k = np.nan
+        if lo < hi and sel.sum() >= min_overlap_points:
+            a = np.nanmedian(np.interp(wc[sel], wp, fp) * scales[prev])
+            b = np.nanmedian(fc[sel])
+            if np.isfinite(a) and np.isfinite(b) and a > 0 and b > 0:
+                k = a / b
+            else:
+                notes[cur] = "overlap median <= 0: previous factor kept"
+        else:
+            notes[cur] = "no overlap: previous factor kept"
+        scales[cur] = float(k) if np.isfinite(k) else scales[prev]          # no measurement: keep the previous factor
+    return scales, notes
+
+
+def stitch_bands(spectra: Dict[str, object], component: str = "flux", reference: str = "blue",
+                 min_area_frac: float = 0.0, min_overlap_points: int = 5, verbose: bool = True):
+    """Stitch per-band spectra after any per-band corrections, measuring the scale factors on the spectra themselves.
+
+    reference : ``"blue"`` - the shortest-wavelength usable band is kept unscaled and every following band is scaled to
+        match the previous one in their overlap, band by band towards longer wavelengths (bands bluer than another
+        ``reference`` are done the same way towards shorter wavelengths); ``"largest"`` - start from the band whose
+        spectrum covers the largest sky area; or a band name.
+    min_area_frac : drop bands whose spectrum covers less than this fraction of the largest sky area among the bands
+        (e.g. a small NIRSpec field that sees only a corner of an extended region); they would otherwise set
+        (``"blue"``) or distort the normalisation.
+
+    The factors come from the ratio of the median fluxes in each overlap (robust for faint, partly negative spectra); all
+    finite channels are kept, and the overlaps are blended linearly. A ``flux_sys`` attribute (systematic error per band,
+    e.g. of a PSF correction) is scaled and stitched in the same way.
+    Returns ``(wave, flux, err, sys, scales, reference_band)`` (``sys`` is zero if no band has one).
+    """
+    usable = {}
+    for b, s in spectra.items():
+        f = np.asarray(getattr(s, component), float)
+        if np.isfinite(f).sum() >= min_overlap_points:
+            usable[b] = s
+    if not usable:
+        raise ValueError(f"no band has a usable {component} spectrum")
+    areas = {b: _weight(s, component) for b, s in usable.items()}
+    amax = max(areas.values())
+    keep = {b: s for b, s in usable.items() if areas[b] >= min_area_frac * amax}
+    dropped = [b for b in usable if b not in keep]
+    if verbose and dropped:
+        print("  dropped (sky area < {:.0f}% of the largest): ".format(100 * min_area_frac)
+              + ", ".join(f"{b} ({100 * areas[b] / amax:.0f}%)" for b in dropped))
+    first = lambda b: float(np.nanmin(np.asarray(keep[b].wave, float)))
+    names = sorted(keep, key=first)
+    if reference == "blue":
+        ref = names[0]
+    elif reference == "largest":
+        ref = max(keep, key=lambda b: areas[b])
+    else:
+        if reference not in keep:
+            raise KeyError(f"reference band '{reference}' is not usable ({list(keep)})")
+        ref = reference
+    segs = {}
+    for b in names:
+        w = np.asarray(keep[b].wave, float); f = np.asarray(getattr(keep[b], component), float)
+        ok = np.isfinite(w) & np.isfinite(f)
+        o = np.argsort(w[ok])
+        segs[b] = (w[ok][o], f[ok][o])
+    i0 = names.index(ref)
+    red, notes = _band_scales(segs, names[i0:], min_overlap_points)
+    blue, notes_b = _band_scales(segs, names[:i0 + 1][::-1], min_overlap_points)
+    scales = {**blue, **red}
+    notes.update(notes_b)
+    w, f, e, _ = stitch_spectra(keep, component, reference=ref, min_overlap_points=min_overlap_points,
+                                verbose=False, with_errors=True, scales=scales)
+    sys_ = np.zeros_like(f)
+    if any(getattr(s, "flux_sys", None) is not None for s in keep.values()):
+        sb = {b: ApertureSpectrum("sys", b, s.wave, np.where(np.isfinite(np.asarray(getattr(s, component), float)),
+                                                            np.asarray(getattr(s, "flux_sys", 0.0 * s.wave), float), np.nan),
+                                  None, getattr(s, "weights", np.ones((1, 1))), pixel_scale=getattr(s, "pixel_scale", 1.0))
+              for b, s in keep.items()}
+        ws, fs, _ = stitch_spectra(sb, "flux", scales=scales, reference=ref, min_overlap_points=min_overlap_points,
+                                   verbose=False)
+        sys_ = np.abs(np.interp(w, ws, fs))
+    if verbose:
+        print(f"  reference {ref}; scale factors: " + ", ".join(
+            f"{b} {scales[b]:.3f}" + (f" ({notes[b]})" if b in notes else "") for b in names))
+    return w, f, e, sys_, scales, ref

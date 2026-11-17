@@ -38,11 +38,12 @@ from .stacking import (StackedMap, stack_fraction_maps, line_weight, line_to_lin
 from .extraction import (ComponentSpectra, extract_spectra, extract_all, stitch_spectra,
                          decompose_continuum, fraction_on_cube, empirical_errors,
                          ApertureSpectrum, aperture_weights, extract_aperture, extract_apertures,
-                         reference_band, subtract_spectra, subtract_aperture)
+                         reference_band, subtract_spectra, subtract_aperture, stitch_bands)
 from .external import ExternalMap, load_external_map
 from .project import Project, list_projects
 from .utils import save, load
-from .psf import psf_correct, psf_on_cube, psf_fwhm_arcsec, psf_contamination, growth_curve, smooth_point_source
+from .psf import (psf_correct, psf_on_cube, psf_fwhm_arcsec, psf_contamination, growth_curve, smooth_point_source,
+                  corrected_region_spectra)
 from .extinction import (H2Line, H2_CATALOGUE, get_h2_lines, extinction_law, extinction_factor, h2_line_maps,
                          LineFluxMap, TauMap, fit_tau, column_densities, example_spaxels, tau_on_cube,
                          correct_cube, extinction_corrected_spectra, regrid)

@@ -275,6 +275,47 @@ def test_extinction_from_h2():
     assert np.nanmedian(np.asarray(cc.data) / np.where(c.data != 0, c.data, np.nan)) > 1.5
 
 
+def test_per_spaxel_psf_and_extinction():
+    """F_R = sum_i w_i [D_i - P_i S] exp(+tau_i k) recovers the intrinsic extended emission of a region exactly
+    when the point source and the screen are known; per-band stitching from the blue end joins offset bands."""
+    from breaking_the_blend.extraction import ComponentSpectra
+    from breaking_the_blend.psf import psf_on_cube
+    ny = nx = 31
+    wave = np.linspace(8.0, 12.0, 120)
+    cube = btb.Cube("ch2-medium", np.zeros((wave.size, ny, nx)), wave, 0.2, 100.0, err=np.full((wave.size, ny, nx), 1e-7),
+                    agn_xy=(15.3, 14.8))
+    yy, xx = np.indices((ny, nx))
+    r = np.hypot(xx - 15.3, yy - 14.8)
+    tau = 0.3 + 0.05 * (xx - 15)
+    tau = np.clip(tau, 0, None)
+    intr = (np.exp(-r / 8.0) * 1e-3)[None] * (wave / 10.0)[:, None, None]
+    S = 2e-2 * (wave / 10.0) ** 2
+    lam_s = np.linspace(wave.min(), wave.max(), 6)
+    Ps = np.array([psf_on_cube(cube, l, "gaussian") for l in lam_s])
+    P = np.array([np.interp(l, lam_s, np.arange(6)) for l in wave])
+    i0 = np.minimum(np.floor(P).astype(int), 5); t = P - i0; i1 = np.minimum(i0 + 1, 5)
+    Pl = (1 - t)[:, None, None] * Ps[i0] + t[:, None, None] * Ps[i1]
+    k = btb.extinction_law(wave)
+    cube.data = intr * np.exp(-tau[None] * k[:, None, None]) + S[:, None, None] * Pl
+    agn_mask, sf_mask = r < 4, r > 9
+    sp = ComponentSpectra(cube.name, wave, np.ones(wave.size), np.ones(wave.size), agn_mask, sf_mask,
+                          np.zeros((ny, nx)), pixel_scale=0.2, footprint=np.ones((ny, nx), bool))
+    src = btb.ApertureSpectrum("AGN-continuum", cube.name, wave, S, np.zeros_like(S), agn_mask.astype(float))
+    out = btb.corrected_region_spectra({cube.name: cube}, {cube.name: sp}, {"AGN-continuum": {cube.name: src}},
+                                       tau_maps={cube.name: tau}, model="gaussian", verbose=False)
+    for R, m in (("AGN", agn_mask), ("SF", sf_mask)):
+        truth = intr[:, m].sum(axis=1)
+        got = out[f"{R}-corr"][cube.name].flux
+        assert np.allclose(got, truth, rtol=1e-6, atol=1e-12), (R, np.max(np.abs(got / truth - 1)))
+        assert np.all(out[f"{R}-raw"][cube.name].flux > 0)
+    # blue-anchored stitching of two offset bands
+    w1, w2 = np.linspace(5, 7, 100), np.linspace(6.5, 9, 120)
+    a = btb.ApertureSpectrum("x", "b1", w1, w1 ** 2, 0.01 * w1, np.ones((2, 2)))
+    b = btb.ApertureSpectrum("x", "b2", w2, 1.5 * w2 ** 2, 0.01 * w2, np.ones((2, 2)))
+    w, f, e, s_, sc, ref = btb.stitch_bands({"b1": a, "b2": b}, verbose=False)
+    assert ref == "b1" and abs(sc["b2"] - 1 / 1.5) < 1e-3 and np.allclose(f, w ** 2, rtol=1e-3)
+
+
 if __name__ == "__main__":
     import tempfile, pathlib
     test_models_pa_convention()
@@ -285,5 +326,6 @@ if __name__ == "__main__":
     test_empirical_errors()
     test_psf_correction()
     test_extinction_from_h2()
+    test_per_spaxel_psf_and_extinction()
     test_full_pipeline(pathlib.Path(tempfile.mkdtemp()))
     print("all tests passed")

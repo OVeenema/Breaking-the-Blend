@@ -222,6 +222,16 @@ the disc / redshifted cone). `inc_out` is the angle between the bicone axis and 
   method, screen extinction with a power law + silicate law), and `btb.extinction_corrected_spectra(cubes, stack, tau_map,
   ...)` repeats the Step 5 extraction with every spaxel corrected by exp(+tau_9.8 tau(lambda)). Notebooks 01 and 02,
   Section 10 (tau_9.8 map, example excitation diagrams, corrected AGN- and SF-dominated spectra).
+* **Final spectra (per-spaxel PSF + extinction, then stitching)**: `btb.corrected_region_spectra(cubes, spectra,
+  psf_res, tau_maps=...)` removes the AGN's PSF light from every region spaxel and then corrects it for extinction,
+  band by band (sum_i w_i [D_i - P_i S] exp(+tau_i tau(lambda))); `btb.stitch_bands(..., reference="blue")` joins the
+  corrected bands from the short-wavelength end with factors measured on the corrected spectra. The default extinction
+  law is now Donnan et al. (2023a) (`law="donnan2023"`, bundled from SPIRIT, BSD-3). Notebooks 01 and 02, Section 11.
+* **Final spectra (per-spaxel PSF + extinction, then stitching)**: `btb.corrected_region_spectra(cubes, spectra,
+  psf_res, tau_maps=...)` removes the AGN's PSF light from every region spaxel and then corrects it for extinction,
+  band by band (sum_i w_i [D_i - P_i S] exp(+tau_i tau(lambda))); `btb.stitch_bands(..., reference="blue")` joins the
+  corrected bands from the short-wavelength end with factors measured on the corrected spectra. The default extinction
+  law is now Donnan et al. (2023a) (`law="donnan2023"`, bundled from SPIRIT, BSD-3). Notebooks 01 and 02, Section 11.
 * **Exported map**: `results/<name>/stacked_fraction_map.fits` holds the AGN outflow fraction (primary), the disc
   fraction (`F_DISC`) and `N_LINES`, the number of lines contributing to each pixel.
 
@@ -242,6 +252,8 @@ breaking_the_blend/
   extraction.py  Step 5   component and aperture spectra with errors, stitching, continuum split
   psf.py         PSF correction of the AGN point source in the extracted spectra (STPSF / Gaussian PSFs)
   extinction.py  spaxel-by-spaxel tau_9.8 from the H2 rotation diagram, extinction-corrected spectra
+  data/          D23ExtCurve.txt: Donnan et al. (2023a) extinction curve (from SPIRIT, BSD-3 licence)
+  data/          D23ExtCurve.txt: Donnan et al. (2023a) extinction curve (from SPIRIT, BSD-3 licence)
   external.py    optional imported velocity / dispersion maps (3DBarolo, MOKA3D, ...)
   plotting.py    one function per figure of the paper
   mock.py        synthetic ring + bicone cubes in the real MIRI/MRS bands, with known truth

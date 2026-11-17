@@ -18,3 +18,6 @@ test = ["pytest"]
 
 [tool.setuptools]
 packages = ["breaking_the_blend"]
+
+[tool.setuptools.package-data]
+breaking_the_blend = ["data/*.txt"]
