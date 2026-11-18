@@ -264,6 +264,15 @@ def test_extinction_from_h2():
         d = (tm.tau - tau_fn(x, y))[tm.ok]
         assert tm.ok.sum() > 100
         assert abs(np.median(d)) < 0.1 and np.std(d) < 0.15, (method, np.median(d), np.std(d))
+    # the tau map on the grid of a stacked map (pc grid centred on the AGN)
+    from breaking_the_blend.stacking import StackedMap
+    xg = np.linspace(-600, 600, 61)
+    st = StackedMap(xg, xg, np.full((61, 61), 0.5), np.ones((61, 61)), {}, {}, "linear")
+    ts = btb.tau_on_stack(tm, st)
+    Xg, Yg = np.meshgrid(xg, xg)
+    good = np.isfinite(ts)
+    assert ts.shape == (61, 61) and good.sum() > 1000
+    assert np.median(np.abs(ts[good] - tau_fn(Xg, Yg)[good])) < 0.1
     # the tau map on another grid, and the corrected cube recovers the unextincted continuum shape
     c = cubes["ch2-medium"]
     t = btb.tau_on_cube(tm, c)
@@ -276,8 +285,9 @@ def test_extinction_from_h2():
 
 
 def test_per_spaxel_psf_and_extinction():
-    """F_R = sum_i w_i [D_i - P_i S] exp(+tau_i k) recovers the intrinsic extended emission of a region exactly
-    when the point source and the screen are known; per-band stitching from the blue end joins offset bands."""
+    """Extinction first (D_i exp(+tau_i k)), then the PSF contamination of the corrected spaxels (P_i S exp(+tau_i k))
+    removed, recovers the intrinsic extended emission of a region exactly when the point source and the screen are
+    known; per-band stitching from the blue end joins offset bands."""
     from breaking_the_blend.extraction import ComponentSpectra
     from breaking_the_blend.psf import psf_on_cube
     ny = nx = 31

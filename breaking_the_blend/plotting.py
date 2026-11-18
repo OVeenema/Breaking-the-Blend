@@ -813,7 +813,7 @@ def plot_growth_curves(curves, ax=None):
 
 
 # ----------------------------------------------------------------------
-# Extinction from the H2 rotation diagram (Section 10)
+# Corrected spectra: extinction from the H2 rotation diagram (notebooks 01/02, Section 8)
 # ----------------------------------------------------------------------
 def plot_extinction_law(law="donnan2023", lines=None, wave_range=(2.5, 28.0), ax=None):
     """The extinction law tau(lambda)/tau_9.8 with the H2 transitions marked."""
@@ -957,3 +957,39 @@ def plot_tau_map(tm, spaxels: Optional[Sequence[Tuple[int, int]]] = None, stack=
     axes[0].set_title(f"method: {tm.method}" + (f"; contours: f_out = {levels[0]:g}, {levels[1]:g}" if fo is not None else ""),
                       fontsize=12)
     return fig
+
+
+def plot_tau98_on_stack(stack, tau, lim_pc: Optional[float] = None, ax=None, title: Optional[str] = None,
+                        vmax: Optional[float] = None, levels=(0.2, 0.8), scalebar_pc: Optional[float] = None,
+                        cmap: str = "magma"):
+    """tau_9.8 map on the grid and field of the stacked outflow-fraction map (as :func:`plot_stacked_map`), with the
+    f_out = ``levels`` contours (SF- and AGN-dominated regions; ``levels=None`` for none). Grey: field of the stacked
+    map without a tau_9.8 measurement."""
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7, 6), constrained_layout=True)
+    style_axes(ax)
+    ext = stack.extent
+    ax.imshow(np.where(np.isfinite(stack.f_out), 1.0, np.nan), extent=ext, cmap="Greys", vmin=0, vmax=4)
+    if vmax is None:
+        vmax = float(np.nanpercentile(tau, 98)) if np.isfinite(tau).any() else 1.0
+    im = ax.imshow(tau, extent=ext, cmap=cmap, vmin=0, vmax=vmax)
+    if levels:
+        X, Y = np.meshgrid(stack.x_pc, stack.y_pc)
+        ax.contour(X, Y, np.ma.masked_invalid(stack.f_out), levels=list(levels),
+                   colors=["darkorange", "deepskyblue"][:len(levels)], linewidths=1.4)
+    _agn(ax, "w")
+    if lim_pc:
+        ax.set_xlim(-lim_pc, lim_pc)
+        ax.set_ylim(-lim_pc, lim_pc)
+    ax.set_xlabel(r"$\Delta x$ [pc]")
+    ax.set_ylabel(r"$\Delta y$ [pc]")
+    if scalebar_pc:
+        x1, x2 = ax.get_xlim()
+        y1, y2 = ax.get_ylim()
+        xe, ye = x2 - 0.06 * (x2 - x1), y1 + 0.07 * (y2 - y1)
+        ax.plot([xe - scalebar_pc, xe], [ye, ye], color="k", lw=3)
+        ax.text(xe - scalebar_pc / 2, ye + 0.02 * (y2 - y1), f"{scalebar_pc:g} pc", ha="center", va="bottom")
+    if title:
+        ax.set_title(title)
+    style_colorbar(plt.colorbar(im, ax=ax, pad=0.02), r"$\tau_{9.8}$ (H$_2$)")
+    return ax.figure

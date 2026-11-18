@@ -28,7 +28,9 @@ Steps (functions)
 2. :func:`fit_tau` - tau_9.8 in every spaxel (-> :class:`TauMap`);
 3. :func:`tau_on_cube` - the tau_9.8 map on the grid of any cube (gaps filled, optionally smoothed);
 4. :func:`extinction_corrected_spectra` - Step-5 extraction (same spaxels) of cubes corrected spaxel by
-   spaxel with exp(+tau_9.8 tau(lambda)).
+   spaxel with exp(+tau_9.8 tau(lambda)) (extinction only; in the notebooks the extinction correction of every spaxel is
+   followed by the PSF correction in :func:`breaking_the_blend.corrected_region_spectra`);
+5. :func:`tau_on_stack` - the tau_9.8 map on the grid of the stacked outflow-fraction map.
 
 Extinction law
 --------------
@@ -879,3 +881,21 @@ def extinction_corrected_spectra(cubes: Dict[str, Cube], stack, tm: TauMap, law:
             ts = np.median(t[sp.sf_mask]) if sp.sf_mask is not None and sp.sf_mask.any() else np.nan
             print(f"{sp}  median tau_9.8: AGN-dominated {ta:.2f}, SF-dominated {ts:.2f}")
     return spectra, taus
+
+
+def tau_on_stack(tm: TauMap, stack, which: str = "tau", clip_negative: bool = True, min_valid: float = 0.5,
+                 oversample: int = 4) -> np.ndarray:
+    """The tau_9.8 map (``which="tau"``) or its uncertainty (``"tau_err"``) on the grid of the stacked fraction map (same
+    pixels and field as ``stack.f_out``): area-averaged from the H2 grid, NaN where tau_9.8 was not measured or the
+    stacked map is undefined (no filling)."""
+    x, y = np.asarray(stack.x_pc, float), np.asarray(stack.y_pc, float)
+    dx, dy = x[1] - x[0], y[1] - y[0]
+    if not np.isclose(abs(dx), abs(dy), rtol=1e-3):
+        raise ValueError("the stacked map needs square pixels")
+    s = tm.grid.pc_per_arcsec
+    grid = Grid((y.size, x.size), abs(dx) / s, (-x[0] / dx, -y[0] / dy), s, "stacked map")
+    t = np.where(tm.ok, getattr(tm, which), np.nan)
+    if clip_negative and which == "tau":
+        t = np.where(np.isfinite(t), np.clip(t, 0.0, None), np.nan)
+    out = regrid(t, tm.grid, grid, kind="mean", oversample=oversample, min_valid=min_valid)
+    return np.where(np.isfinite(np.asarray(stack.f_out, float)), out, np.nan)

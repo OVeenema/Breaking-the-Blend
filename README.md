@@ -58,7 +58,7 @@ python scripts/download_mast_cubes.py --target "NGC 5728" --programs 1670 5017 -
 or follow the portal instructions in [`data/NGC5728/README.md`](data/NGC5728/README.md).
 Results of every notebook are written to `notebooks/results/<name>/`.
 
-## The method in five steps
+## The method in five steps, plus corrected spectra
 
 | Step | What | Function(s) |
 |---|---|---|
@@ -66,7 +66,8 @@ Results of every notebook are written to `notebooks/results/<name>/`.
 | 2 | Fit a thin rotating disc, a hollow bicone, or both (α-weighted) to the velocity maps — or skip and give literature values; draw the geometry | `fit_kinematics`, `fit_many`, `trend_with_ip`, `plot_geometry` |
 | 3 | In every spaxel fix both Gaussians' **velocities** (models) and **widths** (Step 1), fit only the amplitudes → disc fraction per line | `line_params`, `decompose_lines` |
 | 4 | Weighted stack of all lines on a common pc grid → final AGN-outflow fraction map, and the share of it dominated by each component | `stack_fraction_maps`, `fraction_summary` |
-| 5 | AGN- and star-formation-dominated spectra (with errors) across all bands; circular-aperture spectra (e.g. nuclear) for comparison (optionally: split a continuum map, `decompose_continuum`) | `extract_all`, `stitch_spectra`, `extract_apertures` |
+| 5 | AGN- and star-formation-dominated spectra (with errors) across all bands, stitched and saved as observed (optionally: split a continuum map, `decompose_continuum`) | `extract_all`, `stitch_spectra` |
+| + | **Corrected spectra**: τ<sub>9.8</sub> per spaxel from the H₂ S(1)-S(7) rotation diagram; every region spaxel corrected for extinction, then for the AGN light spread by the PSF (nuclear aperture, AGN point source, PSF model), per band; then stitched → AGN-psf-corrected, AGN-outflow-corrected and SF-corrected spectra, and a τ<sub>9.8</sub> map | `h2_line_maps`, `fit_tau`, `tau_on_cube`, `extract_apertures`, `psf_correct`, `corrected_region_spectra`, `stitch_bands` |
 
 ## Install
 
@@ -106,7 +107,9 @@ dependencies, e.g. astropy and emcee, still need to be present.)
 * **`notebooks/00_quickstart_mock.ipynb`** — the whole method in a few minutes on a synthetic galaxy with a known
   answer. No data needed. Start here (it ends with some things to try).
 * **`notebooks/01_NGC5728.ipynb`** — a fully worked, annotated example on NGC 5728. It adopts several settings of the
-  original by-hand analysis (marked in the notebook) so the published maps are reproduced closely.
+  original by-hand analysis (marked in the notebook) so the published maps are reproduced closely. Its last section
+  (also in notebook 02) turns the decomposition into corrected spectra: the AGN point source (PSF-corrected), the AGN
+  outflow and the star formation, corrected spaxel by spaxel first for extinction and then for the AGN's PSF light.
 * **`notebooks/02_template_new_galaxy.ipynb`** — **start here for a new target**: the same workflow with no
   galaxy-specific settings, generic starting values, and the cells to edit clearly marked (**EDIT**).
 * **`notebooks/03_check_line_settings.ipynb`** — a fast checker for a new dataset: shows each line's wavelength
@@ -194,44 +197,48 @@ the disc / redshifted cone). `inc_out` is the angle between the bicone axis and 
 * **Dispersions**: `dispersion_medians(..., min_ratio=1.3)` ignores spaxels where the double-Gaussian fit is
   degenerate (a single-component profile gives two Gaussians of nearly the same width).
 * **Spectra**: detector gaps are left out, bands with too few selected spaxels are skipped (`min_spaxels`), and
-  `stitch_spectra` scales all bands relative to a reference band (default: the one covering the largest sky area).
+  `stitch_spectra` scales all bands relative to a reference band (default: the one covering the largest sky area);
+  `stitch_bands` (used for the corrected spectra) starts from the bluest band instead.
 * **Spectrum errors**: `extract_all(..., err_method=...)` gives a 1σ error per channel - `"cube"` (the cubes' ERR
   extensions summed in quadrature; load the cubes with `load_err=True`; a lower limit, as neighbouring spaxels of a
   resampled cube share noise), `"empirical"` (the measured channel-to-channel scatter of each spectrum), or `"max"`
   (the larger of the two). `stitch_spectra(..., with_errors=True)` carries them through the stitching, and the
   exported `component_spectra_*.txt` files have three columns: rest wavelength [µm], flux [Jy], error [Jy].
-* **Aperture spectra**: `btb.extract_apertures(cubes, {"nuclear": dict(radius_arcsec=0.3, offset_arcsec=(0, 0))})`
-  extracts spectra in circular apertures (radius in arcsec, centre as an east/north offset from the AGN, so the same
-  sky region in every band) with exact fractional pixel weights, errors, and the same gap / field-of-view handling.
-  Stitch them with the AGN-dominated spectrum's band scale factors (`stitch_spectra(..., "flux", scales=...)`) so
-  the two are directly comparable. `btb.subtract_aperture(cubes, spectra, aperture_spectra["nuclear"], "agn")`
-  removes the aperture from the AGN-dominated region per band, on the pixels themselves: AGN-dominated minus nuclear
-  (point source), i.e. mainly the outflow, without double-counting the shared pixels in the errors. Notebooks 01 and
-  02 end with a 0.3" nuclear-aperture example. Aperture spectra are not PSF-corrected.
-* **PSF correction**: `btb.psf_correct(cubes, spectra, aperture_spectra["nuclear"], model="webbpsf")` treats the
-  nuclear aperture as the AGN point source and uses STPSF/WebbPSF (or a Gaussian) PSFs to give the aperture-corrected
-  **AGN** spectrum, the **AGN-outflow** spectrum (AGN-dominated region with the point source removed) and the **SF**
-  spectrum (SF-dominated region with the AGN's PSF wings removed). By default only the smooth AGN continuum is
-  subtracted from the regions (lines, PAH and H2 stay), the files carry random errors and the PSF-model systematic in
-  separate columns, and bands needing large rescaling are dropped. Notebooks 01 and 02,
-  Section 9, with PSF-contamination maps and curve-of-growth checks. STPSF is installed with the environment; its
-  data files (~90 MB) download automatically to `~/data/stpsf-data` on first use (needs internet once).
-* **Extinction correction from H2**: `btb.h2_line_maps(cubes, target="S1")` measures H2 S(1)-S(7) PSF-matched on the
-  MRS channel-3 grid, `btb.fit_tau(maps)` finds tau_9.8 in every spaxel from the dip of S(3) (in the 9.8 um silicate
-  feature) in the rotation diagram (Donnan et al. 2024, MNRAS 529, 1386, Fig. 7; power-law or Laplacian-smoothness
-  method, screen extinction with a power law + silicate law), and `btb.extinction_corrected_spectra(cubes, stack, tau_map,
-  ...)` repeats the Step 5 extraction with every spaxel corrected by exp(+tau_9.8 tau(lambda)). Notebooks 01 and 02,
-  Section 10 (tau_9.8 map, example excitation diagrams, corrected AGN- and SF-dominated spectra).
-* **Final spectra (per-spaxel PSF + extinction, then stitching)**: `btb.corrected_region_spectra(cubes, spectra,
-  psf_res, tau_maps=...)` removes the AGN's PSF light from every region spaxel and then corrects it for extinction,
-  band by band (sum_i w_i [D_i - P_i S] exp(+tau_i tau(lambda))); `btb.stitch_bands(..., reference="blue")` joins the
-  corrected bands from the short-wavelength end with factors measured on the corrected spectra. The default extinction
-  law is now Donnan et al. (2023a) (`law="donnan2023"`, bundled from SPIRIT, BSD-3). Notebooks 01 and 02, Section 11.
-* **Final spectra (per-spaxel PSF + extinction, then stitching)**: `btb.corrected_region_spectra(cubes, spectra,
-  psf_res, tau_maps=...)` removes the AGN's PSF light from every region spaxel and then corrects it for extinction,
-  band by band (sum_i w_i [D_i - P_i S] exp(+tau_i tau(lambda))); `btb.stitch_bands(..., reference="blue")` joins the
-  corrected bands from the short-wavelength end with factors measured on the corrected spectra. The default extinction
-  law is now Donnan et al. (2023a) (`law="donnan2023"`, bundled from SPIRIT, BSD-3). Notebooks 01 and 02, Section 11.
+* **Corrected spectra** (notebooks 01 and 02, Section 8). The Step 5 spectra are sums of observed spaxels; Section 8
+  corrects every AGN-dominated (f_out > 0.8) and SF-dominated (f_out < 0.2) spaxel, band by band, first for extinction
+  and then for the light of the unresolved AGN spread by the PSF, and only then stitches the bands (applying
+  band-dependent corrections to an already stitched spectrum leaves jumps at the band edges). τ_9.8 comes from the H₂
+  lines, which the AGN does not emit, so it is measured on the observed cubes with no PSF model involved. Each spaxel is
+  corrected, D_i' = D_i exp(+τ_9.8,i τ(λ)), and its PSF contamination, C_i = P_i S exp(+τ_9.8,i τ(λ)) (P_i the fraction of
+  the AGN point source the PSF model puts in spaxel i, S the point-source spectrum of that band; the AGN light in the
+  spaxel was scaled by the same correction), is removed: F_R(λ) = Σ_i [D_i'(λ) − C_i(λ)]. Outputs in
+  `results/<name>/`: `spectrum_AGN-raw.txt` (0.3" nuclear aperture), `spectrum_AGN-psf-corrected.txt` (aperture / PSF
+  encircled energy), `spectrum_AGN-outflow-corrected.txt`, `spectrum_SF-corrected.txt` (columns: rest wavelength,
+  flux, random error, PSF-model systematic) and the τ_9.8 map on the grid of the outflow fraction map
+  (`tau98_map.npz/.fits`, `figures/tau98_map.pdf`). The steps as functions, in the order used:
+  * `btb.h2_line_maps(cubes, target="S1")` - H₂ S(1)-S(7) flux maps, PSF-matched on the MRS channel-3 grid of S(1)
+    (S(7) deblended from [Mg VII]); `btb.fit_tau(maps, method="powerlaw" | "smoothness")` - τ_9.8 in every spaxel from
+    the dip of S(3) (in the 9.8 µm silicate feature) in the rotation diagram (Donnan et al. 2024, MNRAS 529, 1386,
+    Fig. 7), with Monte-Carlo errors; `btb.tau_on_stack(tau_map, stack)` puts it on the grid of the outflow map and
+    `btb.tau_on_cube(tau_map, cube)` on any cube;
+  * extinction law: `btb.extinction_law(wave, law="donnan2023")` - Donnan et al. (2023a): 0.1 (9.8/λ)^1.7 + 0.9 τ_Sil
+    with the empirical silicate profile of IRAS 08572+3915 (bundled table from Donnan's
+    [SPIRIT](https://github.com/FergusDonnan/SPIRIT), BSD-3); `"kvt"` (PAHFIT) or any `(wave, tau)` table also work;
+  * `btb.extract_apertures(cubes, {"nuclear": dict(radius_arcsec=0.3)})` - aperture spectra (exact pixel weights,
+    centre given as an east/north offset from the AGN, so the same sky region in every band);
+  * `btb.psf_correct(cubes, spectra, aperture_spectra["nuclear"], model="webbpsf", point_source="fit")` - the AGN
+    point-source spectrum of every band (PSF + smooth extended emission fitted around the nucleus, or aperture / EE)
+    and the PSF fractions; STPSF (WebbPSF) instrument PSFs, or a Gaussian. STPSF is installed with the environment;
+    its data files (~90 MB) download to `~/data/stpsf-data` on first use. `btb.psf_contamination` and
+    `btb.growth_curve` are the checks shown in the notebooks;
+  * `btb.corrected_region_spectra(cubes, spectra, psf_res, tau_maps=...)` - the per-spaxel, per-band corrections:
+    extinction first, then the PSF contamination of the corrected spaxels (also extinction-only and PSF-only versions;
+    with `psf_res={}` extinction only); `btb.stitch_bands(bands, reference="blue", min_area_frac=0.3)` - stitches
+    from the short-wavelength end with factors measured on the corrected spectra, dropping bands that cover only a
+    small part of a region.
+
+  Older building blocks are still available: `btb.subtract_aperture` (region minus aperture on the pixels) and
+  `btb.extinction_corrected_spectra` (extinction-only extraction).
 * **Exported map**: `results/<name>/stacked_fraction_map.fits` holds the AGN outflow fraction (primary), the disc
   fraction (`F_DISC`) and `N_LINES`, the number of lines contributing to each pixel.
 
@@ -249,10 +256,9 @@ breaking_the_blend/
   geometry.py    schematic of the disc + bicone geometry relative to the line of sight
   decompose.py   Step 3   constrained amplitude fits -> f_disc
   stacking.py    Step 4   weighted multi-line map, robustness checks, dominated fractions
-  extraction.py  Step 5   component and aperture spectra with errors, stitching, continuum split
-  psf.py         PSF correction of the AGN point source in the extracted spectra (STPSF / Gaussian PSFs)
-  extinction.py  spaxel-by-spaxel tau_9.8 from the H2 rotation diagram, extinction-corrected spectra
-  data/          D23ExtCurve.txt: Donnan et al. (2023a) extinction curve (from SPIRIT, BSD-3 licence)
+  extraction.py  Step 5   component and aperture spectra with errors, stitching (incl. per-band corrected), continuum split
+  psf.py         AGN point source and PSF model (STPSF / Gaussian); per-spaxel extinction-then-PSF corrected spectra
+  extinction.py  H2 line maps, tau_9.8 per spaxel from the H2 rotation diagram, extinction laws, regridding
   data/          D23ExtCurve.txt: Donnan et al. (2023a) extinction curve (from SPIRIT, BSD-3 licence)
   external.py    optional imported velocity / dispersion maps (3DBarolo, MOKA3D, ...)
   plotting.py    one function per figure of the paper

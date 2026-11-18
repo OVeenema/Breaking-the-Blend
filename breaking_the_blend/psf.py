@@ -27,6 +27,11 @@ PSF models
   lambda in observed micron) or ~0.033 lambda (NIRSpec), scaled by ``fwhm_scale``. Useful without the PSF data,
   and as a cross-check.
 
+Per-spaxel corrections (:func:`corrected_region_spectra`, notebooks 01/02 Section 8): every region spaxel i is first
+corrected for extinction with its own tau_9.8 (from the H2 lines - no PSF model involved), then the AGN PSF light in the
+corrected spaxel, P_i S exp(+tau_i tau(lambda)), is removed, band by band, before the bands are stitched
+(:func:`breaking_the_blend.stitch_bands`): F_R = sum_i w_i [D_i exp(+tau_i tau(lambda)) - P_i S exp(+tau_i tau(lambda))].
+
 Notes: models of the instrument PSF do not include the broadening by cube building, which makes real MRS cube
 PSFs somewhat broader (cf. Argyriou et al. 2023); ``symmetric=True`` (default) azimuthally averages the PSF, which
 avoids having to match the PSF orientation to the cube (sky-aligned cubes are rotated relative to the instrument).
@@ -425,30 +430,38 @@ def growth_curve(cubes: Dict[str, Cube], lam_rest: float, radii_arcsec=None, mod
 
 
 # ----------------------------------------------------------------------
-# Per-spaxel extinction + PSF correction of the region spectra, band by band
+# Per-spaxel extinction, then PSF correction of the region spectra, band by band
 # ----------------------------------------------------------------------
 def corrected_region_spectra(cubes: Dict[str, Cube], spectra: Dict[str, ComponentSpectra], psf_result,
                              tau_maps: Optional[Dict[str, np.ndarray]] = None, law="donnan2023",
                              model: str = "webbpsf", n_wave: int = 6, oversample: int = 4, symmetric: bool = True,
                              fwhm_scale: float = 1.0, subtract: str = "continuum", psf_sys: float = 0.1,
                              verbose: bool = True):
-    """AGN- and SF-dominated spectra corrected spaxel by spaxel for the leaked AGN PSF and for extinction, per band
-    (not stitched).
+    """AGN- and SF-dominated spectra corrected spaxel by spaxel, first for extinction and then for the leaked AGN PSF
+    light, per band (not stitched).
 
-    For every band and region R (the Step 5 spaxels, weights w_i) the corrected spectrum is
+    For every band and region R (the Step 5 spaxels, weights w_i):
 
-        F_R(lambda) = sum_i w_i [D_i(lambda) - P_i(lambda) S(lambda)] exp(+tau_i tau(lambda))
+    1. each spaxel is corrected for extinction with its own tau_9.8 (``tau_maps[band]``, e.g. from
+       :func:`breaking_the_blend.tau_on_cube`; measured from the H2 lines, which the AGN does not emit, so no PSF model
+       enters it): D_i'(lambda) = D_i(lambda) exp(+tau_i tau(lambda));
+    2. the PSF contamination of each corrected spaxel is computed and removed: the AGN light in spaxel i is
+       P_i(lambda) S(lambda), and the extinction correction of step 1 has scaled it by the same factor, so the
+       contamination of the corrected spaxel is C_i = P_i S exp(+tau_i tau(lambda));
+    3. the spaxels are summed:
 
-    with D_i the observed spectrum of spaxel i, P_i(lambda) the fraction of the AGN point source that the PSF model puts
-    in spaxel i (at the band's AGN position, interpolated between ``n_wave`` sample wavelengths), S the AGN point-source
-    spectrum of this band (``psf_result`` from :func:`psf_correct`: its smooth continuum with ``subtract="continuum"``,
-    the per-channel spectrum with ``"full"``) and tau_i the spaxel's tau_9.8 (``tau_maps[band]``, e.g. from
-    :func:`breaking_the_blend.tau_on_cube`). The PSF leakage is removed *before* the extinction correction: the leaked
-    light is the AGN's, not behind the spaxel's screen.
+        F_R(lambda) = sum_i w_i [D_i'(lambda) - C_i(lambda)].
+
+    P_i(lambda) is the fraction of the AGN point source that the PSF model puts in spaxel i (at the band's AGN position,
+    interpolated between ``n_wave`` sample wavelengths) and S the AGN point-source spectrum of this band (``psf_result``
+    from :func:`psf_correct`: its smooth continuum with ``subtract="continuum"``, the per-channel spectrum with
+    ``"full"``). (Algebraically this equals sum_i w_i [D_i - P_i S] exp(+tau_i tau(lambda)).)
 
     Returns ``{name: {band: ApertureSpectrum}}`` with, for R in ``AGN`` and ``SF``: ``R-raw`` (observed), ``R-ext``
-    (extinction only), ``R-psf`` (PSF only) and ``R-corr`` (both). Errors: ``flux_err`` = random (ERR cube, scaled by the
-    correction, plus the point-source error x leaked fraction); ``flux_sys`` = ``psf_sys`` x the subtracted PSF light.
+    (extinction only, step 1), ``R-psf`` (PSF only, no extinction correction) and ``R-corr`` (extinction, then PSF).
+    Without ``psf_result`` for a band (e.g. ``psf_result={}``) only ``raw`` and ``ext`` are returned. Errors:
+    ``flux_err`` = random (ERR cube, scaled by the correction, plus the point-source error x contamination);
+    ``flux_sys`` = ``psf_sys`` x the subtracted PSF light.
     """
     from .extinction import extinction_law
     src_key = "AGN-continuum" if subtract == "continuum" else "AGN"
@@ -498,12 +511,13 @@ def corrected_region_spectra(cubes: Dict[str, Cube], spectra: Dict[str, Componen
                 FR_s = np.einsum("sij,ij->s", Ps, w)                               # leaked fraction (observed)
                 FR = (1 - t) * FR_s[i0] + t * FR_s[i1]
                 if E is not None:
-                    G_s = np.einsum("sij,lij->sl", Ps * w[None], E)               # leaked fraction x exp(tau k)
+                    # PSF contamination of the extinction-corrected spaxels: sum_i w_i P_i exp(tau_i k)  (x S below)
+                    G_s = np.einsum("sij,lij->sl", Ps * w[None], E)
                     G = (1 - t) * G_s[i0, np.arange(nl)] + t * G_s[i1, np.arange(nl)]
                 else:
                     G = FR
                 versions["psf"] = (raw - FR * S, np.hypot(e_raw, FR * eS), psf_sys * np.abs(FR * S))
-                versions["corr"] = (ext - G * S, np.hypot(e_ext, G * eS), psf_sys * np.abs(G * S))
+                versions["corr"] = (ext - G * S, np.hypot(e_ext, G * eS), psf_sys * np.abs(G * S))   # step 1 - step 2
                 msg.append(f"{R}: PSF leak {100 * np.nanmin(FR):.1f}-{100 * np.nanmax(FR):.1f}% of S")
             for v, (f, e, s_) in versions.items():
                 e = np.where(np.isfinite(f), e, np.nan)

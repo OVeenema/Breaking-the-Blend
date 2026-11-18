@@ -10,9 +10,9 @@ Workflow (one module per step):
 3. ``decompose``             fixed-velocity, fixed-dispersion amplitude fits -> f_disc per line
 4. ``stacking``              weighted multi-line f_disc / f_out map
 5. ``extraction``            AGN- and SF-dominated spectra, continuum decomposition
-   ``psf``                   PSF correction of the nuclear / region spectra
-   ``extinction``            spaxel-by-spaxel tau_9.8 from the H2 S(1)-S(7) rotation diagram and
-                             extinction-corrected spectra
+6. ``psf`` + ``extinction`` corrected spectra: tau_9.8 per spaxel from the H2 S(1)-S(7) rotation
+   diagram; the AGN point source (PSF model) removed from, and the extinction corrected in, every
+   region spaxel band by band; then stitched -> AGN (PSF-corrected), AGN-outflow and SF spectra
 
 ``project.Project`` keeps one results folder per galaxy (checkpoints, figures,
 config.json) so the same notebook runs on many targets.
@@ -46,7 +46,7 @@ from .psf import (psf_correct, psf_on_cube, psf_fwhm_arcsec, psf_contamination, 
                   corrected_region_spectra)
 from .extinction import (H2Line, H2_CATALOGUE, get_h2_lines, extinction_law, extinction_factor, h2_line_maps,
                          LineFluxMap, TauMap, fit_tau, column_densities, example_spaxels, tau_on_cube,
-                         correct_cube, extinction_corrected_spectra, regrid)
+                         correct_cube, extinction_corrected_spectra, regrid, tau_on_stack)
 from .geometry import plot_geometry, plot_sky_view, plot_3d_view, mean_geometry, geometry_params
 from .mock import MRS_BANDS, NIRSPEC_BANDS
 from . import plotting, mock

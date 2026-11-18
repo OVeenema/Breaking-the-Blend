@@ -296,6 +296,34 @@ class Project:
             pass
         print(f"exported -> {self.file(key, '.npz')}")
 
+    def export_tau_map(self, stack, tau, tau_err=None, key: str = "tau98_map") -> None:
+        """Write a tau_9.8 map on the grid of the stacked fraction map (:func:`breaking_the_blend.tau_on_stack`) as
+        ``.npz`` (always) and ``.fits`` (if astropy is installed; same pc-offset axes as the stacked map)."""
+        tau = np.asarray(tau, np.float32)
+        err = None if tau_err is None else np.asarray(tau_err, np.float32)
+        np.savez(self.file(key, ".npz"), x_pc=stack.x_pc, y_pc=stack.y_pc, tau98=tau,
+                 **({} if err is None else {"tau98_err": err}))
+        try:
+            from astropy.io import fits
+            hdr = fits.Header()
+            hdr["OBJECT"] = self.name
+            for ax, arr in ((1, stack.x_pc), (2, stack.y_pc)):
+                hdr[f"CTYPE{ax}"] = ("OFFSET", "offset from AGN")
+                hdr[f"CUNIT{ax}"] = "pc"
+                hdr[f"CRPIX{ax}"] = 1.0
+                hdr[f"CRVAL{ax}"] = float(arr[0])
+                hdr[f"CDELT{ax}"] = float(arr[1] - arr[0])
+            hdr["BUNIT"] = "tau_9.8"
+            hdr["COMMENT"] = "PRIMARY: optical depth at 9.8 um from the H2 S(3) dip (screen); same grid as the"
+            hdr["COMMENT"] = "stacked fraction map. TAU_ERR: 1-sigma uncertainty (if given)."
+            hdus = [fits.PrimaryHDU(tau, hdr)]
+            if err is not None:
+                hdus.append(fits.ImageHDU(err, hdr, name="TAU_ERR"))
+            fits.HDUList(hdus).writeto(self.file(key, ".fits"), overwrite=True)
+        except ImportError:
+            pass
+        print(f"exported -> {self.file(key, '.npz')}")
+
     def export_spectra(self, spectra: Dict[str, tuple], key: str = "component_spectra") -> None:
         """Write spectra ``{label: (wave, flux)}`` or ``{label: (wave, flux, error)}`` to one text
         file per label (columns: rest wavelength [um], flux [Jy] and, if given, 1-sigma error [Jy])."""
